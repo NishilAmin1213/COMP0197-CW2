@@ -1,0 +1,36 @@
+# Dataset files
+/Oxford-IIIT-Pet/
+/images/
+/annotations/
+*.gz
+
+# Model checkpoints
+*.pth
+*.pt
+*.bin
+*.h5
+
+# PyTorch/VSCode artifacts
+.ipynb_checkpoints/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Python
+*.egg-info/
+*.egg
+dist/
+build/
+*.so
+
+# Logs and outputs
+logs/
+runs/
+*.log
+*.csv
+
+# Environment
+.env
+.venv/
+venv/
+ENV/
