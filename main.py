@@ -212,14 +212,14 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = SimpleSegNet(in_channels=3, out_channels=2).to(device)
     lr = 0.001
-    epochs = 2
+    epochs = 10
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
     print("Training Model")
     for epoch in range(epochs):
         train_loss = train_one_epoch(model, train_loader, optimizer, criterion, device)
-        print(f"Epoch [{epoch + 1}/{epochs}] - Train Loss: {train_loss:.4f}")
+        print(f"Epoch [{epoch + 1}/{epochs}] - Train Loss: {train_loss:.6f}")
 
         # Optional: Validate
         if val_loader:
@@ -233,10 +233,10 @@ if __name__ == "__main__":
                     loss = criterion(outputs, masks)
                     val_loss += loss.item()
             val_loss /= len(val_loader)
-            print(f"           Validation Loss: {val_loss:.4f}")
+            print(f"           Validation Loss: {val_loss:.8f}")
 
     # -----------------------------
-    # EVALUATE ON TEST SET
+    # EVALUATE ON TEST SET - REMOVE BELOW HERE IF THERES ISSUES
     # -----------------------------
     model.eval()
     test_loss = 0.0
