@@ -168,12 +168,13 @@ def train_one_epoch(model, loader, optimizer, criterion, device):
 
     for images, masks in loader:
         images = images.to(device)
-
-        masks = masks.to(device)
+        # Remove the extra channel dimension & convert to Long for CrossEntropy
+        masks = masks.squeeze(1).long().to(device)
 
         optimizer.zero_grad()
-        outputs = model(images)
+        outputs = model(images)  # shape [B, out_channels, H, W]
 
+        # CrossEntropyLoss expects outputs [B, C, H, W], masks [B, H, W]
         loss = criterion(outputs, masks)
         loss.backward()
         optimizer.step()
@@ -227,7 +228,7 @@ if __name__ == "__main__":
             with torch.no_grad():
                 for images, masks in val_loader:
                     images = images.to(device)
-                    masks = masks.to(device)
+                    masks = masks.squeeze(1).long().to(device)
                     outputs = model(images)
                     loss = criterion(outputs, masks)
                     val_loss += loss.item()
