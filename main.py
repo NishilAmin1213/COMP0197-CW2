@@ -235,3 +235,39 @@ if __name__ == "__main__":
             val_loss /= len(val_loader)
             print(f"           Validation Loss: {val_loss:.4f}")
 
+    # -----------------------------
+    # EVALUATE ON TEST SET
+    # -----------------------------
+    model.eval()
+    test_loss = 0.0
+    correct_pixels = 0
+    total_pixels = 0
+
+    with torch.no_grad():
+        for images, masks in test_loader:
+            images = images.to(device)
+            # squeeze(1) to remove the [batch, 1, H, W] channel, cast to Long
+            masks = masks.squeeze(1).long().to(device)
+
+            outputs = model(images)  # shape [B, out_channels, H, W]
+
+            # 1) Compute loss
+            loss = criterion(outputs, masks)
+            test_loss += loss.item()
+
+            # 2) Compute pixel accuracy
+            #    argmax along channel dimension => predicted class per pixel
+            preds = outputs.argmax(dim=1)  # shape [B, H, W]
+            correct_pixels += (preds == masks).sum().item()
+            total_pixels += preds.numel()  # total number of pixels in the batch
+
+
+    # Average test loss
+    test_loss /= len(test_loader)
+
+    # Pixel-level accuracy (fraction of correctly predicted pixels)
+    pixel_accuracy = correct_pixels / total_pixels
+
+    print(f"Test Loss: {test_loss:.4f}")
+    print(f"Test Pixel Accuracy: {pixel_accuracy * 100:.2f}%")
+
