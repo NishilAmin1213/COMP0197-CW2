@@ -75,13 +75,9 @@ def prepare_dataset(data_dir='Oxford-IIIT-Pet', test_size=0.1, val_size=0.1):
     copy_files(val_files, 'val')
     copy_files(test_files, 'test')
 
-    print("Dataset prepared with " + str(len(train_files))  + " training, " + str(len(val_files)) +  " validation, and " + str(len(test_files)) + " test images")
-
+    print(f"Dataset prepared with {len(train_files)} training, {len(val_files)} validation, and {len(test_files)} test images")
 
 def check_dataset_exists(data_dir='Oxford-IIIT-Pet'):
-    """
-    Check if dataset is properly set up by looking for non-empty train/val subfolders.
-    """
     required_folders = [
         os.path.join(data_dir, 'train', 'images'),
         os.path.join(data_dir, 'train', 'annotations'),
@@ -92,26 +88,28 @@ def check_dataset_exists(data_dir='Oxford-IIIT-Pet'):
     for folder in required_folders:
         if not os.path.exists(folder):
             return False
-
-        # Check if folders contain at least one file
         if len(os.listdir(folder)) == 0:
             return False
-
     return True
-
 
 class AnimalSegmentationDataset(Dataset):
     def __init__(self, images_dir, annotation_dir):
         self.images_dir = images_dir
         self.annotation_dir = annotation_dir
 
-        # Build your default transformations here:
-        self.transform = T.Compose([
-            T.Resize((256, 256)),  # Example resize
-            T.ToTensor(),  # Convert PIL Image to Tensor
+        # Image transforms (with augmentation for training)
+        self.image_transform = T.Compose([
+            T.Resize((256, 256)),
+            T.ToTensor(),
+            T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        ])
+        
+        # Mask transforms (must preserve integer class values)
+        self.mask_transform = T.Compose([
+            T.Resize((256, 256), interpolation=T.InterpolationMode.NEAREST),
+            T.PILToTensor()
         ])
 
-        # Assumes that for every image, the corresponding mask has the same filename (but different extension).
         self.image_fnames = sorted([f for f in os.listdir(self.images_dir) if f.lower().endswith('.jpg')])
         self.annotation_fnames = sorted([f for f in os.listdir(self.annotation_dir) if f.lower().endswith('.png')])
 
@@ -119,48 +117,50 @@ class AnimalSegmentationDataset(Dataset):
         return len(self.image_fnames)
 
     def __getitem__(self, idx):
-        # Get file names
         img_name = self.image_fnames[idx]
-        mask_name = self.annotation_fnames[idx]
+        mask_name = img_name.replace('.jpg', '.png')
 
-        # Load image and mask
         img_path = os.path.join(self.images_dir, img_name)
         annotation_path = os.path.join(self.annotation_dir, mask_name)
 
         image = Image.open(img_path).convert("RGB")
         annotation = Image.open(annotation_path)
 
-        # Apply default transforms
-        image = self.transform(image)
-        annotation = self.transform(annotation)
+        # Apply transforms
+        image = self.image_transform(image)
+        annotation = self.mask_transform(annotation)
+        
+        # Process mask: convert to long tensor and adjust class indices
+        annotation = annotation.squeeze(0).long()  # Remove channel dim and ensure correct type
+        annotation -= 1  # Convert from 1-3 to 0-2 for CrossEntropyLoss
 
         return image, annotation
 
-
 class SimpleSegNet(nn.Module):
-    def __init__(self, in_channels=3, out_channels=2):
+    def __init__(self, in_channels=3, out_channels=3):  # Changed to 3 output channels
         super().__init__()
 
-        # Down/Encoder path
-        self.conv1 = nn.Conv2d(in_channels, 8, kernel_size=3, padding=1)
-        self.pool1 = nn.MaxPool2d(kernel_size=2)  # halves H and W
-        self.conv2 = nn.Conv2d(8, 16, kernel_size=3, padding=1)
-
-        # Up/Decoder path
+        # Encoder
+        self.conv1 = nn.Conv2d(in_channels, 16, kernel_size=3, padding=1)
+        self.pool1 = nn.MaxPool2d(kernel_size=2)
+        self.conv2 = nn.Conv2d(16, 32, kernel_size=3, padding=1)
+        
+        # Decoder
         self.upsample = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False)
-        self.conv3 = nn.Conv2d(16, 8, kernel_size=3, padding=1)
-        self.out_conv = nn.Conv2d(8, out_channels, kernel_size=1)
+        self.conv3 = nn.Conv2d(32, 16, kernel_size=3, padding=1)
+        self.out_conv = nn.Conv2d(16, out_channels, kernel_size=1)
 
     def forward(self, x):
+        # Encoder
         x = F.relu(self.conv1(x))
         x = self.pool1(x)
         x = F.relu(self.conv2(x))
-
+        
+        # Decoder
         x = self.upsample(x)
         x = F.relu(self.conv3(x))
         x = self.out_conv(x)
         return x
-
 
 def train_one_epoch(model, loader, optimizer, criterion, device):
     model.train()
@@ -168,13 +168,10 @@ def train_one_epoch(model, loader, optimizer, criterion, device):
 
     for images, masks in loader:
         images = images.to(device)
-        # Remove the extra channel dimension & convert to Long for CrossEntropy
-        masks = masks.squeeze(1).long().to(device)
+        masks = masks.to(device)
 
         optimizer.zero_grad()
-        outputs = model(images)  # shape [B, out_channels, H, W]
-
-        # CrossEntropyLoss expects outputs [B, C, H, W], masks [B, H, W]
+        outputs = model(images)
         loss = criterion(outputs, masks)
         loss.backward()
         optimizer.step()
@@ -183,91 +180,96 @@ def train_one_epoch(model, loader, optimizer, criterion, device):
 
     return running_loss / len(loader)
 
+def evaluate(model, loader, criterion, device):
+    model.eval()
+    running_loss = 0.0
+    correct_pixels = 0
+    total_pixels = 0
+    iou = 0.0
+
+    with torch.no_grad():
+        for images, masks in loader:
+            images = images.to(device)
+            masks = masks.to(device)
+
+            outputs = model(images)
+            loss = criterion(outputs, masks)
+            running_loss += loss.item()
+
+            # Calculate accuracy
+            preds = outputs.argmax(dim=1)
+            correct_pixels += (preds == masks).sum().item()
+            total_pixels += masks.numel()
+
+            # Calculate IoU per class
+            for class_idx in range(3):  # For 3 classes
+                pred_mask = (preds == class_idx)
+                true_mask = (masks == class_idx)
+                intersection = (pred_mask & true_mask).sum().float()
+                union = (pred_mask | true_mask).sum().float()
+                iou += (intersection / (union + 1e-10)).item()
+
+    metrics = {
+        'loss': running_loss / len(loader),
+        'accuracy': correct_pixels / total_pixels,
+        'iou': iou / (len(loader) * 3)  # Average IoU across classes and batches
+    }
+    return metrics
 
 if __name__ == "__main__":
     print("Supervised Learning Code Started")
 
-    # If the Oxford-IIIT-Pet doesn't exist, create it
     if not check_dataset_exists('Oxford-IIIT-Pet'):
         os.makedirs('Oxford-IIIT-Pet', exist_ok=True)
+        prepare_dataset(data_dir='Oxford-IIIT-Pet', test_size=0.1, val_size=0.1)
 
-    print("Preparing the Dataset")
-    # Prepare the datasets using the prepare_dataset function above
-    prepare_dataset(data_dir='Oxford-IIIT-Pet', test_size=0.1, val_size=0.1)
-
-    # Initialize datasets
     print("Initialising Dataset Objects")
     base_dir = "Oxford-IIIT-Pet"
-    train_dataset = AnimalSegmentationDataset(base_dir + "/train/images",base_dir + "/train/annotations")
-    val_dataset = AnimalSegmentationDataset(base_dir + "/val/images",base_dir + "/val/annotations")
-    test_dataset = AnimalSegmentationDataset(base_dir + "/test/images",base_dir + "/test/annotations")
+    train_dataset = AnimalSegmentationDataset(
+        os.path.join(base_dir, "train", "images"),
+        os.path.join(base_dir, "train", "annotations")
+    )
+    val_dataset = AnimalSegmentationDataset(
+        os.path.join(base_dir, "val", "images"),
+        os.path.join(base_dir, "val", "annotations")
+    )
+    test_dataset = AnimalSegmentationDataset(
+        os.path.join(base_dir, "test", "images"),
+        os.path.join(base_dir, "test", "annotations")
+    )
 
-    # Create DataLoaders
     print("Creating Dataloaders")
-    train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True, num_workers=2)
-    val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False, num_workers=2)
-    test_loader = DataLoader(test_dataset, batch_size=16, shuffle=False, num_workers=2)
+    train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True, num_workers=4)
+    val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False, num_workers=4)
+    test_loader = DataLoader(test_dataset, batch_size=16, shuffle=False, num_workers=4)
 
     print("Setting Hyperparameters")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = SimpleSegNet(in_channels=3, out_channels=2).to(device)
+    model = SimpleSegNet(in_channels=3, out_channels=3).to(device)
     lr = 0.001
-    epochs = 10
+    epochs = 3
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=2)
 
     print("Training Model")
     for epoch in range(epochs):
         train_loss = train_one_epoch(model, train_loader, optimizer, criterion, device)
-        print(f"Epoch [{epoch + 1}/{epochs}] - Train Loss: {train_loss:.6f}")
+        
+        # Validation
+        val_metrics = evaluate(model, val_loader, criterion, device)
+        
+        # Update learning rate
+        scheduler.step(val_metrics['loss'])
+        
+        print(f"Epoch [{epoch+1}/{epochs}]")
+        print(f"Train Loss: {train_loss:.4f} | Val Loss: {val_metrics['loss']:.4f}")
+        print(f"Val Accuracy: {val_metrics['accuracy']*100:.2f}% | Val IoU: {val_metrics['iou']:.4f}")
 
-        # Optional: Validate
-        if val_loader:
-            model.eval()
-            val_loss = 0.0
-            with torch.no_grad():
-                for images, masks in val_loader:
-                    images = images.to(device)
-                    masks = masks.squeeze(1).long().to(device)
-                    outputs = model(images)
-                    loss = criterion(outputs, masks)
-                    val_loss += loss.item()
-            val_loss /= len(val_loader)
-            print(f"           Validation Loss: {val_loss:.8f}")
-
-    # -----------------------------
-    # EVALUATE ON TEST SET - REMOVE BELOW HERE IF THERES ISSUES
-    # -----------------------------
-    model.eval()
-    test_loss = 0.0
-    correct_pixels = 0
-    total_pixels = 0
-
-    with torch.no_grad():
-        for images, masks in test_loader:
-            images = images.to(device)
-            # squeeze(1) to remove the [batch, 1, H, W] channel, cast to Long
-            masks = masks.squeeze(1).long().to(device)
-
-            outputs = model(images)  # shape [B, out_channels, H, W]
-
-            # 1) Compute loss
-            loss = criterion(outputs, masks)
-            test_loss += loss.item()
-
-            # 2) Compute pixel accuracy
-            #    argmax along channel dimension => predicted class per pixel
-            preds = outputs.argmax(dim=1)  # shape [B, H, W]
-            correct_pixels += (preds == masks).sum().item()
-            total_pixels += preds.numel()  # total number of pixels in the batch
-
-
-    # Average test loss
-    test_loss /= len(test_loader)
-
-    # Pixel-level accuracy (fraction of correctly predicted pixels)
-    pixel_accuracy = correct_pixels / total_pixels
-
-    print(f"Test Loss: {test_loss:.4f}")
-    print(f"Test Pixel Accuracy: {pixel_accuracy * 100:.2f}%")
-
+    # Final evaluation on test set
+    print("\nTesting Model")
+    test_metrics = evaluate(model, test_loader, criterion, device)
+    print(f"\nFinal Test Results:")
+    print(f"Loss: {test_metrics['loss']:.4f}")
+    print(f"Pixel Accuracy: {test_metrics['accuracy']*100:.2f}%")
+    print(f"Mean IoU: {test_metrics['iou']:.4f}")
