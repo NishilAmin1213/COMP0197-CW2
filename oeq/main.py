@@ -137,28 +137,41 @@ class AnimalSegmentationDataset(Dataset):
         return image, annotation
 
 class SimpleSegNet(nn.Module):
-    def __init__(self, in_channels=3, out_channels=3):  # Changed to 3 output channels
+    def __init__(self, in_channels=3, out_channels=3, dropout_prob=0.3):
         super().__init__()
-
-        # Encoder
-        self.conv1 = nn.Conv2d(in_channels, 16, kernel_size=3, padding=1)
-        self.pool1 = nn.MaxPool2d(kernel_size=2)
-        self.conv2 = nn.Conv2d(16, 32, kernel_size=3, padding=1)
         
-        # Decoder
-        self.upsample = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False)
-        self.conv3 = nn.Conv2d(32, 16, kernel_size=3, padding=1)
+        # Encoder (Downsampling)
+        self.enc_conv1 = nn.Conv2d(in_channels, 16, kernel_size=3, padding=1)
+        self.enc_bn1 = nn.BatchNorm2d(16)  # BN after conv
+        self.pool1 = nn.MaxPool2d(kernel_size=2)
+        
+        self.enc_conv2 = nn.Conv2d(16, 32, kernel_size=3, padding=1)
+        self.enc_bn2 = nn.BatchNorm2d(32)  # BN after conv
+        self.enc_dropout = nn.Dropout2d(p=dropout_prob)  # Spatial dropout
+        
+        # Decoder (Upsampling)
+        self.upsample = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False)
+        self.dec_conv3 = nn.Conv2d(32, 16, kernel_size=3, padding=1)
+        self.dec_bn3 = nn.BatchNorm2d(16)  # BN after conv
+        self.dec_dropout = nn.Dropout2d(p=dropout_prob/2)  # Reduced dropout
+        
+        # Final prediction
         self.out_conv = nn.Conv2d(16, out_channels, kernel_size=1)
 
     def forward(self, x):
         # Encoder
-        x = F.relu(self.conv1(x))
+        x = F.relu(self.enc_bn1(self.enc_conv1(x)))  # Conv → BN → ReLU
         x = self.pool1(x)
-        x = F.relu(self.conv2(x))
+        
+        x = F.relu(self.enc_bn2(self.enc_conv2(x)))
+        x = self.enc_dropout(x)  # Apply dropout after last encoder layer
         
         # Decoder
         x = self.upsample(x)
-        x = F.relu(self.conv3(x))
+        x = F.relu(self.dec_bn3(self.dec_conv3(x)))
+        x = self.dec_dropout(x)  # Apply dropout before final conv
+        
+        # Final prediction (no BN/Dropout here)
         x = self.out_conv(x)
         return x
 
