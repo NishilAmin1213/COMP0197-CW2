@@ -15,6 +15,8 @@ from torch.utils.data import Dataset
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import matplotlib.pyplot as plt
+
 
 def prepare_dataset(data_dir='Oxford-IIIT-Pet', test_size=0.1, val_size=0.1):
     print("Preparing dataset structure...")
@@ -75,7 +77,9 @@ def prepare_dataset(data_dir='Oxford-IIIT-Pet', test_size=0.1, val_size=0.1):
     copy_files(val_files, 'val')
     copy_files(test_files, 'test')
 
-    print(f"Dataset prepared with {len(train_files)} training, {len(val_files)} validation, and {len(test_files)} test images")
+    print(
+        f"Dataset prepared with {len(train_files)} training, {len(val_files)} validation, and {len(test_files)} test images")
+
 
 def check_dataset_exists(data_dir='Oxford-IIIT-Pet'):
     required_folders = [
@@ -92,6 +96,7 @@ def check_dataset_exists(data_dir='Oxford-IIIT-Pet'):
             return False
     return True
 
+
 class AnimalSegmentationDataset(Dataset):
     def __init__(self, images_dir, annotation_dir):
         self.images_dir = images_dir
@@ -103,7 +108,7 @@ class AnimalSegmentationDataset(Dataset):
             T.ToTensor(),
             T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
-        
+
         # Mask transforms (must preserve integer class values)
         self.mask_transform = T.Compose([
             T.Resize((256, 256), interpolation=T.InterpolationMode.NEAREST),
@@ -129,32 +134,33 @@ class AnimalSegmentationDataset(Dataset):
         # Apply transforms
         image = self.image_transform(image)
         annotation = self.mask_transform(annotation)
-        
+
         # Process mask: convert to long tensor and adjust class indices
         annotation = annotation.squeeze(0).long()  # Remove channel dim and ensure correct type
         annotation -= 1  # Convert from 1-3 to 0-2 for CrossEntropyLoss
 
         return image, annotation
 
+
 class SimpleSegNet(nn.Module):
     def __init__(self, in_channels=3, out_channels=3, dropout_prob=0.3):
         super().__init__()
-        
+
         # Encoder (Downsampling)
         self.enc_conv1 = nn.Conv2d(in_channels, 16, kernel_size=3, padding=1)
         self.enc_bn1 = nn.BatchNorm2d(16)  # BN after conv
         self.pool1 = nn.MaxPool2d(kernel_size=2)
-        
+
         self.enc_conv2 = nn.Conv2d(16, 32, kernel_size=3, padding=1)
         self.enc_bn2 = nn.BatchNorm2d(32)  # BN after conv
         self.enc_dropout = nn.Dropout2d(p=dropout_prob)  # Spatial dropout
-        
+
         # Decoder (Upsampling)
         self.upsample = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False)
         self.dec_conv3 = nn.Conv2d(32, 16, kernel_size=3, padding=1)
         self.dec_bn3 = nn.BatchNorm2d(16)  # BN after conv
-        self.dec_dropout = nn.Dropout2d(p=dropout_prob/2)  # Reduced dropout
-        
+        self.dec_dropout = nn.Dropout2d(p=dropout_prob / 2)  # Reduced dropout
+
         # Final prediction
         self.out_conv = nn.Conv2d(16, out_channels, kernel_size=1)
 
@@ -162,18 +168,19 @@ class SimpleSegNet(nn.Module):
         # Encoder
         x = F.relu(self.enc_bn1(self.enc_conv1(x)))  # Conv → BN → ReLU
         x = self.pool1(x)
-        
+
         x = F.relu(self.enc_bn2(self.enc_conv2(x)))
         x = self.enc_dropout(x)  # Apply dropout after last encoder layer
-        
+
         # Decoder
         x = self.upsample(x)
         x = F.relu(self.dec_bn3(self.dec_conv3(x)))
         x = self.dec_dropout(x)  # Apply dropout before final conv
-        
+
         # Final prediction (no BN/Dropout here)
         x = self.out_conv(x)
         return x
+
 
 def train_one_epoch(model, loader, optimizer, criterion, device):
     model.train()
@@ -192,6 +199,7 @@ def train_one_epoch(model, loader, optimizer, criterion, device):
         running_loss += loss.item()
 
     return running_loss / len(loader)
+
 
 def evaluate(model, loader, criterion, device):
     model.eval()
@@ -229,6 +237,30 @@ def evaluate(model, loader, criterion, device):
     }
     return metrics
 
+
+def plot_and_save_history(training_loss_history, validation_loss_history, validation_accuracy_history):
+    # 1) Plot training & validation loss on a single figure
+    plt.figure()
+    plt.plot(training_loss_history, label='Train Loss')
+    plt.plot(validation_loss_history, label='Val Loss')
+    plt.title('Training and Validation Loss')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.legend()
+    plt.savefig('loss_plot.png')  # Saves the figure to disk
+    plt.close()                   # Closes the figure so it doesn’t display
+
+    # 2) Plot validation accuracy on another figure
+    plt.figure()
+    plt.plot(validation_accuracy_history, label='Val Accuracy')
+    plt.title('Validation Accuracy')
+    plt.xlabel('Epoch')
+    plt.ylabel('Accuracy')
+    plt.legend()
+    plt.savefig('accuracy_plot.png')
+    plt.close()
+
+
 if __name__ == "__main__":
     print("Supervised Learning Code Started")
 
@@ -260,29 +292,40 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = SimpleSegNet(in_channels=3, out_channels=3).to(device)
     lr = 0.001
-    epochs = 3
+    epochs = 15
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=2)
 
+
+    training_loss_history = []
+    validation_loss_history = []
+    validation_accuracy_history = []
     print("Training Model")
     for epoch in range(epochs):
         train_loss = train_one_epoch(model, train_loader, optimizer, criterion, device)
-        
+
         # Validation
         val_metrics = evaluate(model, val_loader, criterion, device)
-        
+
         # Update learning rate
         scheduler.step(val_metrics['loss'])
-        
-        print(f"Epoch [{epoch+1}/{epochs}]")
+
+        training_loss_history.append(train_loss)
+        validation_loss_history.append(val_metrics['loss'])
+        validation_accuracy_history.append(val_metrics['accuracy'])
+
+        print("Epoch " + str(epoch + 1) + "/" + str(epochs))
         print(f"Train Loss: {train_loss:.4f} | Val Loss: {val_metrics['loss']:.4f}")
-        print(f"Val Accuracy: {val_metrics['accuracy']*100:.2f}% | Val IoU: {val_metrics['iou']:.4f}")
+        print(f"Val Accuracy: {val_metrics['accuracy'] * 100:.2f}% | Val IoU: {val_metrics['iou']:.4f}")
 
     # Final evaluation on test set
     print("\nTesting Model")
     test_metrics = evaluate(model, test_loader, criterion, device)
     print(f"\nFinal Test Results:")
     print(f"Loss: {test_metrics['loss']:.4f}")
-    print(f"Pixel Accuracy: {test_metrics['accuracy']*100:.2f}%")
+    print(f"Pixel Accuracy: {test_metrics['accuracy'] * 100:.2f}%")
     print(f"Mean IoU: {test_metrics['iou']:.4f}")
+
+
+    plot_and_save_history(training_loss_history, validation_loss_history, validation_accuracy_history)
