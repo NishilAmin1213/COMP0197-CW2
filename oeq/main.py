@@ -1,22 +1,14 @@
 import os
 import random
 import shutil
-from PIL import Image
-import numpy as np
-import torch
-from torch.utils.data import Dataset, DataLoader
-import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
 import torchvision.transforms as T
-import os
 from PIL import Image
-import torch
-from torch.utils.data import Dataset
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.data import Dataset
 import matplotlib.pyplot as plt
-
 
 def prepare_dataset(data_dir='Oxford-IIIT-Pet', test_size=0.1, val_size=0.1):
     print("Preparing dataset structure...")
@@ -34,9 +26,7 @@ def prepare_dataset(data_dir='Oxford-IIIT-Pet', test_size=0.1, val_size=0.1):
     original_ann_dir = os.path.join('annotations', 'trimaps')
 
     if not os.path.exists(original_img_dir) or not os.path.exists(original_ann_dir):
-        raise FileNotFoundError(
-            "Original dataset files not found. Please download and extract images.tar.gz and annotations.tar.gz first."
-        )
+        raise FileNotFoundError("Original dataset files not found. Please download and extract images.tar.gz and annotations.tar.gz first")
 
     # Get all jpg filenames in the directory
     image_files = []
@@ -77,8 +67,7 @@ def prepare_dataset(data_dir='Oxford-IIIT-Pet', test_size=0.1, val_size=0.1):
     copy_files(val_files, 'val')
     copy_files(test_files, 'test')
 
-    print(
-        f"Dataset prepared with {len(train_files)} training, {len(val_files)} validation, and {len(test_files)} test images")
+    print(str(len(train_files)) + " training images, " + str(len(val_files)) + " validation images, and " + str(len(test_files)) + "test images")
 
 
 def check_dataset_exists(data_dir='Oxford-IIIT-Pet'):
@@ -142,7 +131,7 @@ class AnimalSegmentationDataset(Dataset):
         return image, annotation
 
 
-class SimpleSegNet(nn.Module):
+class SupervisedNetwork(nn.Module):
     def __init__(self, in_channels=3, out_channels=3, dropout_prob=0.3):
         super().__init__()
 
@@ -238,21 +227,24 @@ def evaluate(model, loader, criterion, device):
     return metrics
 
 
-def plot_and_save_history(training_loss_history, validation_loss_history, validation_accuracy_history):
-    # 1) Plot training & validation loss on a single figure
+def plot_and_save_history(training_loss_history, validation_loss_history, validation_accuracy_history, test_accuracy, mean_iou, test_loss):
+    # Plot the training and validation loss
     plt.figure()
-    plt.plot(training_loss_history, label='Train Loss')
-    plt.plot(validation_loss_history, label='Val Loss')
+    plt.plot(training_loss_history, label='Training Loss')
+    plt.plot(validation_loss_history, label='Validation Loss')
+    plt.plot([], [], ' ', label="Testing Loss = " + str(test_loss))
     plt.title('Training and Validation Loss')
     plt.xlabel('Epoch')
     plt.ylabel('Loss')
     plt.legend()
-    plt.savefig('loss_plot.png')  # Saves the figure to disk
-    plt.close()                   # Closes the figure so it doesn’t display
+    plt.savefig('loss_plot.png')
+    plt.close()
 
-    # 2) Plot validation accuracy on another figure
+    # Plot the validatoin accuracy over time
     plt.figure()
     plt.plot(validation_accuracy_history, label='Val Accuracy')
+    plt.plot([], [], ' ', label="Test Accuracy = " + str(test_accuracy))
+    plt.plot([], [], ' ', label="Mean IoU = " + str(mean_iou))
     plt.title('Validation Accuracy')
     plt.xlabel('Epoch')
     plt.ylabel('Accuracy')
@@ -290,9 +282,9 @@ if __name__ == "__main__":
 
     print("Setting Hyperparameters")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = SimpleSegNet(in_channels=3, out_channels=3).to(device)
+    model = SupervisedNetwork(in_channels=3, out_channels=3).to(device)
     lr = 0.001
-    epochs = 15
+    epochs = 2 # SET TO 15
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=2)
@@ -316,16 +308,17 @@ if __name__ == "__main__":
         validation_accuracy_history.append(val_metrics['accuracy'])
 
         print("Epoch " + str(epoch + 1) + "/" + str(epochs))
-        print(f"Train Loss: {train_loss:.4f} | Val Loss: {val_metrics['loss']:.4f}")
-        print(f"Val Accuracy: {val_metrics['accuracy'] * 100:.2f}% | Val IoU: {val_metrics['iou']:.4f}")
+        print("Train Loss: " + str(round(train_loss, 4)) + " | Val Loss: " + str(round(val_metrics['loss'], 4)))
+        print("Val Accuracy: " + str(round(val_metrics['accuracy'] * 100, 2)) + "% | Val IoU: " + str(round(val_metrics['iou'], 4)))
 
     # Final evaluation on test set
     print("\nTesting Model")
     test_metrics = evaluate(model, test_loader, criterion, device)
-    print(f"\nFinal Test Results:")
-    print(f"Loss: {test_metrics['loss']:.4f}")
-    print(f"Pixel Accuracy: {test_metrics['accuracy'] * 100:.2f}%")
-    print(f"Mean IoU: {test_metrics['iou']:.4f}")
+    print("\nFinal Test Results:")
+    print("Loss: " + str(round(test_metrics['loss'], 4)))
+    print("Test Accuracy: " + str(round(test_metrics['accuracy'] * 100, 2)) + "%")
+    print("Mean IoU: " + str(round(test_metrics['iou'], 4)))
+
+    plot_and_save_history(training_loss_history, validation_loss_history, validation_accuracy_history, round(test_metrics['accuracy'] * 100, 2), round(test_metrics['iou'], 4), round(test_metrics['loss'], 4))
 
 
-    plot_and_save_history(training_loss_history, validation_loss_history, validation_accuracy_history)
