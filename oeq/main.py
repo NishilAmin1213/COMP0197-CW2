@@ -370,3 +370,6 @@ if __name__ == "__main__":
 
     # Plot training/validation curves, including test metrics in the legend
     plot_and_save_history(training_loss_history, validation_loss_history, validation_accuracy_history, test_metrics)
+
+    print("Saving this model to supervised_model.pt")
+    torch.save(model, "./supervised_model.pt")
