@@ -273,7 +273,7 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = SupervisedNetwork(in_channels=3, out_channels=1).to(device)  # Single output channel
     lr = 0.001
-    epochs = 2 # SET TO 15
+    epochs = 15
     criterion = nn.BCELoss()  # Binary Cross Entropy Loss
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=2)
