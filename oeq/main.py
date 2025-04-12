@@ -151,36 +151,45 @@ class SupervisedNetwork(nn.Module):
 
         # Encoder (Downsampling)
         self.enc_conv1 = nn.Conv2d(in_channels, 16, kernel_size=3, padding=1)
-        self.enc_bn1 = nn.BatchNorm2d(16)  # BN after conv
+        self.enc_bn1 = nn.BatchNorm2d(16)
+        self.enc_relu1 = nn.ReLU(inplace=True)
         self.pool1 = nn.MaxPool2d(kernel_size=2)
 
         self.enc_conv2 = nn.Conv2d(16, 32, kernel_size=3, padding=1)
-        self.enc_bn2 = nn.BatchNorm2d(32)  # BN after conv
-        self.enc_dropout = nn.Dropout2d(p=dropout_prob)  # Spatial dropout
+        self.enc_bn2 = nn.BatchNorm2d(32)
+        self.enc_relu2 = nn.ReLU(inplace=True)
+        self.enc_dropout = nn.Dropout2d(p=dropout_prob)
 
         # Decoder (Upsampling)
         self.upsample = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False)
         self.dec_conv3 = nn.Conv2d(32, 16, kernel_size=3, padding=1)
-        self.dec_bn3 = nn.BatchNorm2d(16)  # BN after conv
-        self.dec_dropout = nn.Dropout2d(p=dropout_prob / 2)  # Reduced dropout
+        self.dec_bn3 = nn.BatchNorm2d(16)
+        self.dec_relu = nn.ReLU(inplace=True)
+        self.dec_dropout = nn.Dropout2d(p=dropout_prob / 2)
 
         # Final prediction (single channel for binary output)
         self.out_conv = nn.Conv2d(16, out_channels, kernel_size=1)
 
     def forward(self, x):
         # Encoder
-        x = F.relu(self.enc_bn1(self.enc_conv1(x)))  # Conv → BN → ReLU
+        x = self.enc_conv1(x)
+        x = self.enc_bn1(x)
+        x = self.enc_relu1(x)
         x = self.pool1(x)
 
-        x = F.relu(self.enc_bn2(self.enc_conv2(x)))
-        x = self.enc_dropout(x)  # Dropout after the last encoder layer
+        x = self.enc_conv2(x)
+        x = self.enc_bn2(x)
+        x = self.enc_relu2(x)
+        x = self.enc_dropout(x)
 
         # Decoder
         x = self.upsample(x)
-        x = F.relu(self.dec_bn3(self.dec_conv3(x)))
-        x = self.dec_dropout(x)  # Dropout before final conv
+        x = self.dec_conv3(x)
+        x = self.dec_bn3(x)
+        x = self.dec_relu(x)
+        x = self.dec_dropout(x)
 
-        # Final prediction (sigmoid activation for binary segmentation)
+        # Final prediction
         x = self.out_conv(x)
         return torch.sigmoid(x)
 
