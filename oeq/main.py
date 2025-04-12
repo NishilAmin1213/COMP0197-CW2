@@ -124,15 +124,15 @@ class AnimalSegmentationDataset(Dataset):
         image = self.image_transform(image)
         annotation = self.mask_transform(annotation)
 
-        # Process mask: convert to long tensor and adjust class indices
+        # Process mask: convert to binary (0=background, 1=foreground+boundary)
         annotation = annotation.squeeze(0).long()  # Remove channel dim and ensure correct type
-        annotation -= 1  # Convert from 1-3 to 0-2 for CrossEntropyLoss
+        annotation = (annotation > 1).long()  # Convert to binary: 0=background, 1=foreground+boundary
 
         return image, annotation
 
 
 class SupervisedNetwork(nn.Module):
-    def __init__(self, in_channels=3, out_channels=3, dropout_prob=0.3):
+    def __init__(self, in_channels=3, out_channels=1, dropout_prob=0.3):
         super().__init__()
 
         # Encoder (Downsampling)
@@ -150,7 +150,7 @@ class SupervisedNetwork(nn.Module):
         self.dec_bn3 = nn.BatchNorm2d(16)  # BN after conv
         self.dec_dropout = nn.Dropout2d(p=dropout_prob / 2)  # Reduced dropout
 
-        # Final prediction
+        # Final prediction (single channel for binary output)
         self.out_conv = nn.Conv2d(16, out_channels, kernel_size=1)
 
     def forward(self, x):
@@ -166,9 +166,9 @@ class SupervisedNetwork(nn.Module):
         x = F.relu(self.dec_bn3(self.dec_conv3(x)))
         x = self.dec_dropout(x)  # Apply dropout before final conv
 
-        # Final prediction (no BN/Dropout here)
+        # Final prediction (sigmoid activation for binary output)
         x = self.out_conv(x)
-        return x
+        return torch.sigmoid(x)
 
 
 def train_one_epoch(model, loader, optimizer, criterion, device):
@@ -177,11 +177,11 @@ def train_one_epoch(model, loader, optimizer, criterion, device):
 
     for images, masks in loader:
         images = images.to(device)
-        masks = masks.to(device)
+        masks = masks.float().to(device)  # Convert to float for BCE loss
 
         optimizer.zero_grad()
         outputs = model(images)
-        loss = criterion(outputs, masks)
+        loss = criterion(outputs, masks.unsqueeze(1))  # Add channel dimension
         loss.backward()
         optimizer.step()
 
@@ -195,39 +195,29 @@ def evaluate(model, loader, criterion, device):
     running_loss = 0.0
     correct_pixels = 0
     total_pixels = 0
-    iou = 0.0
 
     with torch.no_grad():
         for images, masks in loader:
             images = images.to(device)
-            masks = masks.to(device)
+            masks = masks.float().to(device)
 
             outputs = model(images)
-            loss = criterion(outputs, masks)
+            loss = criterion(outputs, masks.unsqueeze(1))
             running_loss += loss.item()
 
             # Calculate accuracy
-            preds = outputs.argmax(dim=1)
-            correct_pixels += (preds == masks).sum().item()
+            preds = (outputs > 0.5).float()  # Threshold at 0.5
+            correct_pixels += (preds == masks.unsqueeze(1)).sum().item()
             total_pixels += masks.numel()
-
-            # Calculate IoU per class
-            for class_idx in range(3):  # For 3 classes
-                pred_mask = (preds == class_idx)
-                true_mask = (masks == class_idx)
-                intersection = (pred_mask & true_mask).sum().float()
-                union = (pred_mask | true_mask).sum().float()
-                iou += (intersection / (union + 1e-10)).item()
 
     metrics = {
         'loss': running_loss / len(loader),
-        'accuracy': correct_pixels / total_pixels,
-        'iou': iou / (len(loader) * 3)  # Average IoU across classes and batches
+        'accuracy': correct_pixels / total_pixels
     }
     return metrics
 
 
-def plot_and_save_history(training_loss_history, validation_loss_history, validation_accuracy_history, test_accuracy, mean_iou, test_loss):
+def plot_and_save_history(training_loss_history, validation_loss_history, validation_accuracy_history, test_accuracy, test_loss):
     # Plot the training and validation loss
     plt.figure()
     plt.plot(training_loss_history, label='Training Loss')
@@ -240,11 +230,10 @@ def plot_and_save_history(training_loss_history, validation_loss_history, valida
     plt.savefig('loss_plot.png')
     plt.close()
 
-    # Plot the validatoin accuracy over time
+    # Plot the validation accuracy over time
     plt.figure()
     plt.plot(validation_accuracy_history, label='Val Accuracy')
     plt.plot([], [], ' ', label="Test Accuracy = " + str(test_accuracy))
-    plt.plot([], [], ' ', label="Mean IoU = " + str(mean_iou))
     plt.title('Validation Accuracy')
     plt.xlabel('Epoch')
     plt.ylabel('Accuracy')
@@ -282,13 +271,12 @@ if __name__ == "__main__":
 
     print("Setting Hyperparameters")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = SupervisedNetwork(in_channels=3, out_channels=3).to(device)
+    model = SupervisedNetwork(in_channels=3, out_channels=1).to(device)  # Single output channel
     lr = 0.001
     epochs = 2 # SET TO 15
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.BCELoss()  # Binary Cross Entropy Loss
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=2)
-
 
     training_loss_history = []
     validation_loss_history = []
@@ -309,7 +297,7 @@ if __name__ == "__main__":
 
         print("Epoch " + str(epoch + 1) + "/" + str(epochs))
         print("Train Loss: " + str(round(train_loss, 4)) + " | Val Loss: " + str(round(val_metrics['loss'], 4)))
-        print("Val Accuracy: " + str(round(val_metrics['accuracy'] * 100, 2)) + "% | Val IoU: " + str(round(val_metrics['iou'], 4)))
+        print("Val Accuracy: " + str(round(val_metrics['accuracy'] * 100, 2)) + "%")
 
     # Final evaluation on test set
     print("\nTesting Model")
@@ -317,8 +305,6 @@ if __name__ == "__main__":
     print("\nFinal Test Results:")
     print("Loss: " + str(round(test_metrics['loss'], 4)))
     print("Test Accuracy: " + str(round(test_metrics['accuracy'] * 100, 2)) + "%")
-    print("Mean IoU: " + str(round(test_metrics['iou'], 4)))
 
-    plot_and_save_history(training_loss_history, validation_loss_history, validation_accuracy_history, round(test_metrics['accuracy'] * 100, 2), round(test_metrics['iou'], 4), round(test_metrics['loss'], 4))
-
-
+    plot_and_save_history(training_loss_history, validation_loss_history, validation_accuracy_history, 
+                         round(test_metrics['accuracy'] * 100, 2), round(test_metrics['loss'], 4))
