@@ -85,6 +85,20 @@ def check_dataset_exists(data_dir='Oxford-IIIT-Pet'):
             return False
     return True
 
+def log_metrics(filename, epoch, metrics, stage):
+    line = (
+        f"Epoch {epoch} | {stage} -> "
+        f"Loss: {metrics['loss']:.4f}, "
+        f"Acc: {metrics['accuracy']*100:.2f}%, "
+        f"Precision: {metrics['precision']:.4f}, "
+        f"Recall: {metrics['recall']:.4f}, "
+        f"Dice: {metrics['dice']:.4f}, "
+        f"IoU: {metrics['iou']:.4f}"
+    )
+    print(line)
+    with open(filename, "a") as f:
+        f.write(line + "\n")
+
 
 class AnimalSegmentationDataset(Dataset):
     def __init__(self, images_dir, annotation_dir):
@@ -322,7 +336,7 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = SupervisedNetwork(in_channels=3, out_channels=1).to(device)  # Single output channel
     lr = 0.001
-    epochs = 15
+    epochs = 1
     criterion = nn.BCELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=2)
@@ -350,6 +364,19 @@ if __name__ == "__main__":
         print("\nEpoch " + str(epoch + 1) + "/" + str(epochs))
         print("Train Loss: " + str(round(train_loss, 4)) + " | Val Loss: " + str(round(val_loss, 4)) + " | Val Accuracy: " + str(round(val_accuracy, 4)) + "%")
 
+        # LOG TRAINING METRICS
+        train_metrics_dict = {
+            'loss': train_loss,
+            'accuracy': 0,  # not tracked in this code
+            'precision': 0, # not tracked in this code
+            'recall': 0,    # not tracked in this code
+            'dice': 0,      # not tracked in this code
+            'iou': 0        # not tracked in this code
+        }
+        log_metrics("log.txt", epoch + 1, train_metrics_dict, "Train")
+        # LOG VALIDATION METRICS
+        log_metrics("log.txt", epoch + 1, val_metrics, "Validation")
+
     print("\n\nValidation Results")
     print("Val Loss: " + str(round(val_loss, 4)))
     print("Val Accuracy: " + str(round(val_accuracy * 100, 2)) + "%")
@@ -367,6 +394,9 @@ if __name__ == "__main__":
     print("Test Recall: " + str(round(test_metrics['recall'], 4)))
     print("Test Dice: " + str(round(test_metrics['dice'], 4)))
     print("Test IoU: " + str(round(test_metrics['iou'], 4)))
+
+    log_metrics("log.txt", epochs, test_metrics, "Test")
+    print("Test metrics logged to log.txt")
 
     # Plot training/validation curves, including test metrics in the legend
     plot_and_save_history(training_loss_history, validation_loss_history, validation_accuracy_history, test_metrics)
