@@ -67,7 +67,7 @@ def prepare_dataset(data_dir='Oxford-IIIT-Pet', test_size=0.1, val_size=0.1):
     copy_files(val_files, 'val')
     copy_files(test_files, 'test')
 
-    print(str(len(train_files)) + " training images, " + str(len(val_files)) + " validation images, and " + str(len(test_files)) + "test images")
+    print(str(len(train_files)) + " training images, " + str(len(val_files)) + " validation images, and " + str(len(test_files)) + " test images")
 
 
 def check_dataset_exists(data_dir='Oxford-IIIT-Pet'):
@@ -124,9 +124,9 @@ class AnimalSegmentationDataset(Dataset):
         image = self.image_transform(image)
         annotation = self.mask_transform(annotation)
 
-        # Process mask: convert to binary (0=background, 1=foreground+boundary)
-        annotation = annotation.squeeze(0).long()  # Remove channel dim and ensure correct type
-        annotation = (annotation > 1).long()  # Convert to binary: 0=background, 1=foreground+boundary
+        # Convert to binary mask (0=background, 1=foreground+boundary)
+        annotation = annotation.squeeze(0).long()  # Remove channel dim, ensure it's long
+        annotation = (annotation > 1).long()       # 0=background, 1=foreground
 
         return image, annotation
 
@@ -159,14 +159,14 @@ class SupervisedNetwork(nn.Module):
         x = self.pool1(x)
 
         x = F.relu(self.enc_bn2(self.enc_conv2(x)))
-        x = self.enc_dropout(x)  # Apply dropout after last encoder layer
+        x = self.enc_dropout(x)  # Dropout after the last encoder layer
 
         # Decoder
         x = self.upsample(x)
         x = F.relu(self.dec_bn3(self.dec_conv3(x)))
-        x = self.dec_dropout(x)  # Apply dropout before final conv
+        x = self.dec_dropout(x)  # Dropout before final conv
 
-        # Final prediction (sigmoid activation for binary output)
+        # Final prediction (sigmoid activation for binary segmentation)
         x = self.out_conv(x)
         return torch.sigmoid(x)
 
@@ -180,8 +180,8 @@ def train_one_epoch(model, loader, optimizer, criterion, device):
         masks = masks.float().to(device)  # Convert to float for BCE loss
 
         optimizer.zero_grad()
-        outputs = model(images)
-        loss = criterion(outputs, masks.unsqueeze(1))  # Add channel dimension
+        outputs = model(images)  # shape [B, 1, H, W]
+        loss = criterion(outputs, masks.unsqueeze(1))  # Must match shape [B, 1, H, W]
         loss.backward()
         optimizer.step()
 
@@ -191,65 +191,114 @@ def train_one_epoch(model, loader, optimizer, criterion, device):
 
 
 def evaluate(model, loader, criterion, device):
+    """
+    Evaluate model on given loader and return a dictionary of metrics:
+    loss, accuracy, precision, recall, dice, iou.
+    """
     model.eval()
     running_loss = 0.0
-    correct_pixels = 0
-    total_pixels = 0
+
+    # Counters for confusion matrix
+    tp = 0
+    fp = 0
+    fn = 0
+    tn = 0
 
     with torch.no_grad():
         for images, masks in loader:
             images = images.to(device)
-            masks = masks.float().to(device)
+            masks = masks.to(device).float()
 
-            outputs = model(images)
+            outputs = model(images)              # [B, 1, H, W]
             loss = criterion(outputs, masks.unsqueeze(1))
             running_loss += loss.item()
 
-            # Calculate accuracy
-            preds = (outputs > 0.5).float()  # Threshold at 0.5
-            correct_pixels += (preds == masks.unsqueeze(1)).sum().item()
-            total_pixels += masks.numel()
+            # Threshold the outputs at 0.5
+            preds = (outputs > 0.5).long()       # [B, 1, H, W]
+            masks_long = masks.long().unsqueeze(1)  # [B, 1, H, W]
+
+            # Flatten for easier confusion matrix calculations
+            preds_flat = preds.view(-1)         # shape: [B * H * W]
+            masks_flat = masks_long.view(-1)    # shape: [B * H * W]
+
+            tp += torch.sum((preds_flat == 1) & (masks_flat == 1)).item()
+            fp += torch.sum((preds_flat == 1) & (masks_flat == 0)).item()
+            fn += torch.sum((preds_flat == 0) & (masks_flat == 1)).item()
+            tn += torch.sum((preds_flat == 0) & (masks_flat == 0)).item()
+
+    # Compute metrics
+    total_loss = running_loss / len(loader)
+    total_pixels = tp + fp + fn + tn
+
+    accuracy = 0.0
+    if total_pixels > 0:
+        accuracy = float(tp + tn) / float(total_pixels)
+
+    precision = 0.0
+    if (tp + fp) > 0:
+        precision = float(tp) / float(tp + fp)
+
+    recall = 0.0
+    if (tp + fn) > 0:
+        recall = float(tp) / float(tp + fn)
+
+    dice = 0.0
+    if (2 * tp + fp + fn) > 0:
+        dice = (2.0 * float(tp)) / float((2 * tp) + fp + fn)
+
+    iou = 0.0
+    if (tp + fp + fn) > 0:
+        iou = float(tp) / float(tp + fp + fn)
 
     metrics = {
-        'loss': running_loss / len(loader),
-        'accuracy': correct_pixels / total_pixels
+        'loss': total_loss,
+        'accuracy': accuracy,
+        'precision': precision,
+        'recall': recall,
+        'dice': dice,
+        'iou': iou
     }
     return metrics
 
 
-def plot_and_save_history(training_loss_history, validation_loss_history, validation_accuracy_history, test_accuracy, test_loss):
+def plot_and_save_history(training_loss_history, validation_loss_history, validation_accuracy_history, test_metrics):
+    # training_loss_history, validation_loss_history: lists of floats
+    # validation_accuracy_history: list of floats
+    # test_metrics: dictionary with 'accuracy' and 'loss' (optionally precision, recall, etc.)
+
     # Plot the training and validation loss
     plt.figure()
     plt.plot(training_loss_history, label='Training Loss')
     plt.plot(validation_loss_history, label='Validation Loss')
-    plt.plot([], [], ' ', label="Testing Loss = " + str(test_loss))
-    plt.title('Training and Validation Loss')
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
+    plt.plot([], [], ' ', label="Testing Loss = " + str(round(test_metrics['loss'], 4)))
+    plt.title("Training and Validation Loss")
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
     plt.legend()
-    plt.savefig('loss_plot.png')
+    plt.savefig("loss_plot.png")
     plt.close()
 
     # Plot the validation accuracy over time
     plt.figure()
     plt.plot(validation_accuracy_history, label='Val Accuracy')
-    plt.plot([], [], ' ', label="Test Accuracy = " + str(test_accuracy))
-    plt.title('Validation Accuracy')
-    plt.xlabel('Epoch')
-    plt.ylabel('Accuracy')
+    plt.plot([], [], ' ', label="Test Accuracy = " + str(round(test_metrics['accuracy'] * 100, 2)) + "%")
+    plt.title("Validation Accuracy")
+    plt.xlabel("Epoch")
+    plt.ylabel("Accuracy")
     plt.legend()
-    plt.savefig('accuracy_plot.png')
+    plt.savefig("accuracy_plot.png")
     plt.close()
 
 
 if __name__ == "__main__":
     print("Supervised Learning Code Started")
 
+    # Check if dataset is already structured; if not, prepare it
     if not check_dataset_exists('Oxford-IIIT-Pet'):
         os.makedirs('Oxford-IIIT-Pet', exist_ok=True)
         prepare_dataset(data_dir='Oxford-IIIT-Pet', test_size=0.1, val_size=0.1)
 
-    print("Initialising Dataset Objects")
+    print("Initializing Dataset Objects")
     base_dir = "Oxford-IIIT-Pet"
     train_dataset = AnimalSegmentationDataset(
         os.path.join(base_dir, "train", "images"),
@@ -269,42 +318,55 @@ if __name__ == "__main__":
     val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False, num_workers=4)
     test_loader = DataLoader(test_dataset, batch_size=16, shuffle=False, num_workers=4)
 
-    print("Setting Hyperparameters")
+    print("Initialising Hyperparameters")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = SupervisedNetwork(in_channels=3, out_channels=1).to(device)  # Single output channel
     lr = 0.001
     epochs = 15
-    criterion = nn.BCELoss()  # Binary Cross Entropy Loss
+    criterion = nn.BCELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=2)
 
     training_loss_history = []
     validation_loss_history = []
     validation_accuracy_history = []
+
     print("Training Model")
     for epoch in range(epochs):
         train_loss = train_one_epoch(model, train_loader, optimizer, criterion, device)
 
-        # Validation
+        # Evaluate on validation set
         val_metrics = evaluate(model, val_loader, criterion, device)
+        val_loss = val_metrics['loss']
+        val_accuracy = val_metrics['accuracy']
 
-        # Update learning rate
-        scheduler.step(val_metrics['loss'])
+        # Update learning rate using scheduler
+        scheduler.step(val_loss)
 
         training_loss_history.append(train_loss)
-        validation_loss_history.append(val_metrics['loss'])
-        validation_accuracy_history.append(val_metrics['accuracy'])
+        validation_loss_history.append(val_loss)
+        validation_accuracy_history.append(val_accuracy)
 
-        print("Epoch " + str(epoch + 1) + "/" + str(epochs))
-        print("Train Loss: " + str(round(train_loss, 4)) + " | Val Loss: " + str(round(val_metrics['loss'], 4)))
-        print("Val Accuracy: " + str(round(val_metrics['accuracy'] * 100, 2)) + "%")
+        print("\nEpoch " + str(epoch + 1) + "/" + str(epochs))
+        print("Train Loss: " + str(round(train_loss, 4)) + " | Val Loss: " + str(round(val_loss, 4)) + " | Val Accuracy: " + str(round(val_accuracy, 4)) + "%")
+
+    print("\n\nValidation Results")
+    print("Val Loss: " + str(round(val_loss, 4)))
+    print("Val Accuracy: " + str(round(val_accuracy * 100, 2)) + "%")
+    print("Val Precision: " + str(round(val_metrics['precision'], 4)))
+    print("Val Recall: " + str(round(val_metrics['recall'], 4)))
+    print("Val Dice: " + str(round(val_metrics['dice'], 4)))
+    print("Val IoU: " + str(round(val_metrics['iou'], 4)))
 
     # Final evaluation on test set
-    print("\nTesting Model")
+    print("\n\nTest Results:")
     test_metrics = evaluate(model, test_loader, criterion, device)
-    print("\nFinal Test Results:")
-    print("Loss: " + str(round(test_metrics['loss'], 4)))
+    print("Test Loss: " + str(round(test_metrics['loss'], 4)))
     print("Test Accuracy: " + str(round(test_metrics['accuracy'] * 100, 2)) + "%")
+    print("Test Precision: " + str(round(test_metrics['precision'], 4)))
+    print("Test Recall: " + str(round(test_metrics['recall'], 4)))
+    print("Test Dice: " + str(round(test_metrics['dice'], 4)))
+    print("Test IoU: " + str(round(test_metrics['iou'], 4)))
 
-    plot_and_save_history(training_loss_history, validation_loss_history, validation_accuracy_history, 
-                         round(test_metrics['accuracy'] * 100, 2), round(test_metrics['loss'], 4))
+    # Plot training/validation curves, including test metrics in the legend
+    plot_and_save_history(training_loss_history, validation_loss_history, validation_accuracy_history, test_metrics)
