@@ -10,42 +10,32 @@ import torch.nn.functional as F
 
 from torch.optim.lr_scheduler import OneCycleLR
 from torch.utils.data import DataLoader, random_split, Dataset
+import torchvision.transforms as transforms
 import torchvision.transforms.v2 as T
 from torchvision.models.segmentation import deeplabv3_resnet50, DeepLabV3_ResNet50_Weights
 from torchvision.models import resnet50, ResNet50_Weights
 from torchvision.datasets import OxfordIIITPet
-
-# For bounding box manipulations (if needed)
 from torchvision.ops import box_convert, box_iou
 
 import numpy as np
 import os
 import random
+from PIL import Image
+import xml.etree.ElementTree as ET
 
 
-# Albumentations for data augmentations
+# External Libraries
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
 import matplotlib.pyplot as plt
 import cv2
 
-from tqdm import tqdm
-
-
-
-
-# Import all the helping files
-#from DatasetLoad import get_dataloader
-#from evaluate_metrics import evaluate_segmentation_metrics
-
-
-
+# Downloads the Oxford-IIIT Pet Dataset if not already present
+OxfordIIITPet(root='./', download=True)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 """
 2. Load the Oxford-IIIT Pet Dataset (Classification Labels)
-
-We only need image–class pairs, so we use:
 """
 
 from torchvision.datasets import OxfordIIITPet
@@ -86,7 +76,7 @@ def load_classifier_dataset():
 
   # Load dataset without transform first
   base_dataset = OxfordIIITPet(
-    root="./oxford_iiit_data",
+    root="./",
     download=True,
     target_types="category",  # classification labels only
     split="trainval",
@@ -258,12 +248,9 @@ def visualize_test_samples(
 
         # 2) Convert ground-truth trimap -> binary mask (ignore boundary=2 => set to 0 or remove)
         trimap_np = trimap_tensor.numpy()  # [H,W]
-        # For visualization, let's just treat boundary as background or ignore.
-        # Suppose we merge boundary=2 with background=0 for the sake of display:
         gt_mask = np.where(trimap_np == 1, 1, 0).astype(np.uint8)
 
         # 3) De-normalize the image for display
-        #    If your dataset was normalized with mean/std, invert that:
         denorm_image = denormalize_image(image_tensor, mean, std)
         # shape [C,H,W], in [0,1] after clamp
         denorm_image_np = denorm_image.permute(1,2,0).cpu().numpy()  # [H,W,C]
@@ -287,7 +274,7 @@ def visualize_test_samples(
         axes[2].axis("off")
 
         plt.tight_layout()
-        plt.savefig(f"visualize_test_sample_{idx}.png")
+        plt.savefig("visualize_test_sample.png")
         #plt.show()
 
 def denormalize_image(tensor, mean, std):
@@ -337,7 +324,6 @@ def visualize_segmentation_val_ds(
         pred_mask = preds.squeeze(0).cpu().numpy().astype(np.uint8)  # shape [H,W]
 
         # 3) De-normalize the image for display
-        #    We'll convert [C,H,W] -> [H,W,C] after de-normalizing.
         denorm_image = denormalize_image(image_tensor, mean, std)  # still [C,H,W]
         denorm_image_np = denorm_image.permute(1,2,0).cpu().numpy()  # [H,W,C] in [0..1]
 
@@ -363,10 +349,12 @@ def visualize_segmentation_val_ds(
         axes[2].axis("off")
 
         plt.tight_layout()
-        plt.savefig(f"visualize_segmentation_val_ds_{idx}.png")
+        plt.savefig("visualize_segmentation_val_ds.png")
         #plt.show()
 
-"""5. Log Metrics"""
+"""
+5. Log Metrics
+"""
 
 import time
 
@@ -390,12 +378,8 @@ def log_metrics(filename, epoch, train_loss, train_acc, val_loss, val_acc, epoch
     with open(filename, "a") as f:
         f.write(log_entry + "\n")
 
-"""6. Training the Classifier
-
-We’ll include:
-  *	Learning rate scheduling (StepLR as an example)
-  *	Weight decay
-  *	Gradient clipping
+"""
+6. Training the Classifier
 """
 
 def train_classifier_with_metrics(
@@ -416,13 +400,7 @@ def train_classifier_with_metrics(
     scheduler = OneCycleLR(
         optimizer,
         max_lr=max_lr,
-        total_steps=total_steps,
-        # optional hyperparams:
-        # pct_start=0.3,  # fraction of cycle spent increasing LR
-        # anneal_strategy='cos',
-        # div_factor=10,   # initial LR = max_lr/div_factor
-        # final_div_factor=100
-    )
+        total_steps=total_steps)
 
     train_loss_history = []
     val_loss_history   = []
@@ -452,7 +430,6 @@ def train_classifier_with_metrics(
 
             optimizer.step()
 
-            # Step the OneCycle scheduler **after** the optimizer step
             scheduler.step()
 
             running_loss += loss.item() * images.size(0)
@@ -602,11 +579,14 @@ class GradCAM:
 """
 Bounding Box Usage:
   *	Bounding box expansion helps ensure that most of the pet is inside the bounding box.
-  *	Soft weighting ensures that if there’s any part of the pet outside that expanded box, you don’t completely discard it (i.e., zero it out). Instead, you downweight it, but you still keep it if the model strongly activates there.
+  *	Soft weighting ensures that if there’s any part of the pet outside that expanded box, 
+  we don’t completely discard it (i.e., zero it out). Instead, we downweight it, 
+  but we still keep it if the model strongly activates there.
 
 Multi_Scale_CAM:
 
-multi_scale_cam loops over each scale in scales, resizing the input images, calling gradcam(...), and then upsampling the resulting CAM back to the original shape.
+multi_scale_cam loops over each scale in scales, resizing the input images, 
+calling gradcam(...), and then upsampling the resulting CAM back to the original shape.
 We stack and average them, producing a single combined CAM for each image in the batch.
 """
 
@@ -681,7 +661,7 @@ def apply_expanded_bbox_soft_weights(cam, bbox, H, W,
     1) Expand the bounding box by 'expansion_ratio'.
     2) Apply soft weighting inside vs. outside the expanded box.
        - inside_weight = 0.9
-       - outside_weight = 0.3 (or any fraction you want)
+       - outside_weight = 0.3 
     """
     # Expand the bbox
     x_min, y_min, x_max, y_max = expand_bbox(bbox, expansion_ratio, img_w=W, img_h=H)
@@ -704,15 +684,12 @@ def generate_cams(model, data_loader, gradcam, device,
     model.eval()
     gradcam.model.eval()
 
-    #idx = 0  # for unique file naming
     with torch.no_grad():
         for batch_idx, (images, targets, paths) in enumerate(data_loader):
             # images shape: [B, C, H, W]
             images = images.to(device)
 
-            # You need a class index to call gradcam(..., class_idx=label)
-            # If you have exactly one label per image, do something like:
-            # (assuming the target is detection style but you only want label[0])
+
             class_idxs = []
             for t in targets:
                 # If there's exactly 1 label per image
@@ -720,15 +697,11 @@ def generate_cams(model, data_loader, gradcam, device,
 
             class_idxs = torch.tensor(class_idxs, dtype=torch.long, device=device)
 
-            # GradCAM call needs a forward and backward pass,
-            # so let's do it with requires_grad
             with torch.enable_grad():
                 # cams_batch = gradcam(images, class_idx=class_idxs)
                 cams_batch = multi_scale_cam(gradcam, images, class_idx=class_idxs, scales=scales)
 
 
-            # cams_batch shape: [B, 1, H', W']
-            # Upsample CAM to match input size (e.g. 224x224 if that's your input transform)
             # using bilinear interpolation
             upsampled_cams = F.interpolate(cams_batch, size=(images.shape[2], images.shape[3]),
                                            mode='bilinear', align_corners=False)
@@ -736,21 +709,14 @@ def generate_cams(model, data_loader, gradcam, device,
             # Now upsampled_cams is [B, 1, H, W]
             upsampled_cams = upsampled_cams.squeeze(1).cpu().numpy()  # shape [B, H, W]
 
-            # If original images are bigger than 224, you may have to re-scale bounding boxes and
-            # possibly re-scale the CAM again. This depends on your transformations.
-
             # Loop over each image in the batch
             for b in range(len(images)):
                 cam_2d = upsampled_cams[b]
 
 
                 if apply_bbox:
-                    # bboxes[b] is the bounding box for this image in original scale
-                    # Make sure the scale is consistent with your input size!
 
-                    # We might have multiple boxes. Suppose we only want box 0:
                     bbox = targets[b]["boxes"][0]  # shape [4]
-                    # If needed, convert to numpy
                     bbox = bbox.cpu().numpy()
 
                     cam_2d = apply_expanded_bbox_soft_weights(
@@ -763,34 +729,22 @@ def generate_cams(model, data_loader, gradcam, device,
                                 outside_weight=0.6
                             )
 
-                # Build a filename from the image path
                 base_name = os.path.splitext(os.path.basename(paths[b]))[0]
                 cam_file = f"{base_name}_cam.npy"
                 cam_path = os.path.join(output_dir, cam_file)
 
                 # Save each CAM
-                # cam_path = os.path.join(output_dir, f"cam_{idx}.npy")
                 np.save(cam_path, cam_2d)
-                #idx += 1
 
     print("CAM generation complete!")
 
 """
 8. Apply ReCAM (Refinement / Expansion)
 
-Below is an illustrative approach inspired by the ReCAM paper. This usually involves:
-  *	Re-scoring the CAM to ensure more complete coverage of the object.
-  *	Possibly iterative expansions (e.g. random erasing, multi-scale expansions).
-  *	We show a simplified version that scales up smaller areas, and we add expansions.
+A simplified version of Offcial ReCAM Technique that scales up smaller areas, and add expansions.
 """
 
 def recam_refinement(cam, expansion_factor=1.2, threshold=0.3):
-    """
-    Simplified approach:
-    1. If the average of the top region is below a certain threshold,
-       push it up (expand coverage).
-    2. You could also do iterative random erasing or multi-scale expansions.
-    """
     # cam: 2D np array [H, W] in [0,1]
     # Step 1: thresholding
     mask = (cam >= threshold).astype(np.uint8)
@@ -821,141 +775,15 @@ def refine_cams_with_recam(cam_dir, refined_dir="cams_refined",
 
     print("ReCAM refinement complete!")
 
-# def recam_refinement_extended(cam,
-#                               iteration_steps=2,
-#                               erase_ratio=0.15,   # smaller
-#                               morph_kernel_size=5,
-#                               coverage_threshold=0.2,
-#                               expansion_factor=1.1,  # smaller expansions
-#                               morphological_threshold=0.2  # also lower
-#                              ):
-#     h, w = cam.shape
-#     refined = cam.copy()
 
-#     for it in range(iteration_steps):
-#         # top X% region
-#         flattened = refined.flatten()
-#         sort_idx = np.argsort(flattened)[::-1]
-#         num_erase = int(len(flattened) * erase_ratio)
-#         if num_erase < 1:
-#             break
-
-#         top_indices = sort_idx[:num_erase]
-
-#         # Erase by scaling them to 0.2 instead of 0.1 or 0.0
-#         refined_flat = refined.flatten()
-#         refined_flat[top_indices] = refined_flat[top_indices] * 0.2
-#         refined = refined_flat.reshape(h, w)
-
-#         # Morphological expansion with a lower threshold
-#         refined = morphological_expand(refined,
-#                                        kernel_size=morph_kernel_size,
-#                                        bin_thresh=morphological_threshold)
-
-#         # Coverage
-#         coverage = np.mean(refined > morphological_threshold)
-#         if coverage < coverage_threshold:
-#             refined *= expansion_factor
-#             refined = np.clip(refined, 0, 1.0)
-
-#     refined = np.clip(refined, 0, 1.0)
-#     return refined
-
-
-# def morphological_expand(cam, kernel_size=5, bin_thresh=0.2):
-#     bin_map = (cam >= bin_thresh).astype(np.uint8)
-#     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
-#     dilated = cv2.dilate(bin_map, kernel, iterations=1)
-#     expanded = cam.copy()
-#     # Raise them to 0.3 or so
-#     expanded[dilated == 1] = np.maximum(expanded[dilated == 1], 0.3)
-#     return expanded
-
-
-# def refine_cams_with_recam_extended(input_cam_dir, output_dir="cams_refined", iteration_steps=2, erase_ratio=0.15,
-#                                     threshold=0.2, expansion_factor=1.1):
-#     import os
-#     os.makedirs(output_dir, exist_ok=True)
-
-#     for f in os.listdir(input_cam_dir):
-#         if not f.endswith(".npy"):
-#             continue
-#         path_in = os.path.join(input_cam_dir, f)
-#         cam = np.load(path_in)  # shape [H,W], float in [0,1]
-
-#         # Some bounding box weighting if desired
-#         # e.g., cam = apply_bbox_soft_weights(cam, bboxes, inside_weight=1.0, outside_weight=0.3)
-
-#         # Extended ReCAM
-#         refined = recam_refinement_extended(
-#             cam,
-#             iteration_steps=iteration_steps,
-#             erase_ratio=erase_ratio,
-#             morph_kernel_size=5,
-#             coverage_threshold=threshold,
-#             expansion_factor=1.2
-#         )
-
-#         out_path = os.path.join(output_dir, f)
-#         np.save(out_path, refined)
-
-#     print("Extended ReCAM refinement complete!")
 
 """
-9. Pseudo-Label Filtering
-
-A simple approach:
-* We binarize or do top-k%.
-* For example, if we do a threshold t=0.5, anything above 0.5 = foreground, else background.
+9. Train Segmentation Model (DeepLab V3+)
 """
 
-def generate_pseudo_masks(refined_cam_dir, output_mask_dir="pseudo_masks", threshold=0.3):
-    os.makedirs(output_mask_dir, exist_ok=True)
+# load the Oxford-IIIT Pet dataset with bounding boxes and apply basic transformations using albumentations
 
-    cam_files = [f for f in os.listdir(refined_cam_dir) if f.endswith('.npy')]
-
-    for cfile in cam_files:
-        cam_path = os.path.join(refined_cam_dir, cfile)
-        cam = np.load(cam_path)
-
-        # Binarize
-        pseudo_mask = (cam >= threshold).astype(np.uint8)
-
-        # Save as PNG, for instance (Convert "myImage_cam.npy" -> "myImage_cam.png")
-        mask_path = os.path.join(output_mask_dir, cfile.replace('.npy', '.png'))
-        cv2.imwrite(mask_path, pseudo_mask*255)
-
-    print("Pseudo-label generation complete!")
-
-"""
-10. Train Segmentation Model (DeepLab V3+)
-
-Now we use the generated pseudo masks as “ground truth” for training. We’ll assume you have a new dataset that loads:
-  *	(Image, PseudoMask)
-  *	Possibly ignoring bounding boxes at this stage.
-
-Transforms:
-Explanation
-*	Resize(256, 256): Brings the image + mask to a consistent scale before further augmentations.
-* RandomCrop(224, 224): Crops both the image + mask to 224×224 at the same random location.
-* HorizontalFlip(p=0.5): Flips the image + mask horizontally 50% of the time.
-* ColorJitter: Adjusts brightness, contrast, saturation, and hue of the image only. Albumentations automatically knows to skip these color transformations on the mask.
-* Normalize: Normalizes the image using mean & std from ImageNet. The mask is unaffected.
-* ToTensorV2: Converts both the image (float tensor in [C, H, W] with normalization) and the mask (uint8 or float tensor in [H, W]) to PyTorch tensors.
-
-Different Transforms for Images vs. Masks?
-* Geometric transforms (resize, flip, crop) must be applied equally to both the image and the segmentation mask. Otherwise, they would no longer be aligned.
-* Color transforms should only be applied to the image—the mask is a label map, so color transformations don’t make sense. Albumentations handles that automatically: if you mark the mask as "mask", it only applies geometric transforms to the mask.
-* Typically, you do not need separate pipelines for images and masks. You define a single Albumentations Compose with additional_targets={"mask": "mask"}, which ensures the correct behavior for both.
-
-Hence, you do not build two separate transformations. Instead, you define one Albumentations pipeline that handles each item differently depending on whether it’s the "image" or "mask" key.
-"""
-
-#--------------------------#
-# from DatasetLoad.py to load the Oxford-IIIT Pet dataset with bounding boxes and apply basic transformations using albumentations
-#--------------------------#
-
-root_dir = "./oxford_iiit_data"  # or any folder you choose
+root_dir = "./"  # or any folder you choose
 
 dummy_dataload = torchvision.datasets.OxfordIIITPet(
     root=root_dir,
@@ -967,8 +795,6 @@ dummy_dataload = torchvision.datasets.OxfordIIITPet(
 def parse_xml_for_bbox(xml_file):
     """Parse the Oxford-IIIT Pet XML file for bounding box [xmin, ymin, xmax, ymax]."""
     if not os.path.exists(xml_file):
-        # Return None or raise an exception.
-        # For skipping, you could do:
         return None, None  # Indicate missing
     tree = ET.parse(xml_file)
     root = tree.getroot()
@@ -989,28 +815,14 @@ def parse_xml_for_bbox(xml_file):
     return bboxes, cls
 
 def read_split_file(file_path):
-    """
-    Reads lines from trainval.txt or test.txt.
-    Returns a list of image IDs (strings).
-    """
     with open(file_path, 'r') as f:
         lines = f.read().strip().split('\n')
-    # Each line might look like "Abyssinian_1 1 1"
-    # We'll take the first token as the image base name and 2nd token as breed-class
     name= [line.split()[0] for line in lines if line.strip()]
     breed= [line.split()[1] for line in lines if line.strip()]
     return name, breed
 
 def build_annotations_list(root_dir, txt_filename):
-    """
-    Build a list of annotation dicts from trainval.txt or test.txt.
-    Each dict might look like:
-        {
-          'image_id': 'Abyssinian_1.jpg',
-          'boxes': [[xmin, ymin, xmax, ymax]],    # can have multiple
-          'labels': ['Abyssinian']                # or numeric label if you prefer
-        }
-    """
+
     images_dir = os.path.join(root_dir, "images")
     xmls_dir   = os.path.join(root_dir, "annotations", "xmls")
     txt_path   = os.path.join(root_dir, "annotations", txt_filename)
@@ -1025,7 +837,6 @@ def build_annotations_list(root_dir, txt_filename):
 
         bboxes, cls = parse_xml_for_bbox(xml_file)
         if bboxes is None or cls is None:
-            # Means parse_xml_for_bbox returned None -> skip
             print(f"Skipping missing file: {xml_file}")
             continue
 
@@ -1042,10 +853,6 @@ def build_annotations_list(root_dir, txt_filename):
     return annotation_dicts
 
 def load_oxford_pet_annotations(root_dir):
-    """
-    Loads 'trainval.txt' and 'test.txt' from the dataset folder, returning
-    two lists of annotation dicts.
-    """
     trainval_anns = build_annotations_list(root_dir, "trainval.txt")
     return trainval_anns
 
@@ -1072,8 +879,7 @@ class OxfordPetBboxDatasetAlbumentations(torch.utils.data.Dataset):
         ann = self.annotations[idx]
         img_path = ann['image_file']
         boxes = ann['boxes']  # List of bounding boxes in pascal_voc format
-        labels = ann['labels']  # List of label strings
-
+        labels = ann['labels']  
         # Load image as a NumPy array.
         image = np.array(Image.open(img_path).convert('RGB'))
 
@@ -1082,8 +888,6 @@ class OxfordPetBboxDatasetAlbumentations(torch.utils.data.Dataset):
 
 
         if self.transform:
-            # Albumentations expects keys: image, bboxes, labels.
-            # It will output a dict with keys: image, bboxes, labels.
             transformed = self.transform(image=image, bboxes=boxes, labels=labels)
             image = transformed['image']
             boxes = transformed['bboxes']
@@ -1093,7 +897,6 @@ class OxfordPetBboxDatasetAlbumentations(torch.utils.data.Dataset):
 
         # Convert bounding boxes to a tensor.
         boxes_tensor = torch.tensor(boxes, dtype=torch.float32)
-        # pick from list, change type to int and -1 so that [1..37] --> [0..36] class labels
         labels_tensor = torch.tensor([int(int(l)-1) for l in labels], dtype=torch.int64)
 
 
@@ -1111,25 +914,14 @@ albumentations_transform = A.Compose(
 
 
 def detection_collate_fn(batch):
-    """
-    Custom collate function for object detection.
-
-    Args:
-        batch: list of tuples (image_tensor, target_dict)
-
-    Returns:
-        batch_images: Tensor [B, C, H, W]
-        batch_targets: list of target dicts (each with 'boxes' and 'labels')
-    """
     images = [item[0] for item in batch]
     targets = [item[1] for item in batch]
     paths = [item[2] for item in batch]
-    images = torch.stack(images, dim=0)  # This works because all images are resized
-
+    images = torch.stack(images, dim=0)  
     return images, targets, paths
 
 def get_dataloader():
-    trainval_anns = load_oxford_pet_annotations("/content/oxford_iiit_data/oxford-iiit-pet")
+    trainval_anns = load_oxford_pet_annotations("oxford-iiit-pet")
     trainval_dataset = OxfordPetBboxDatasetAlbumentations(trainval_anns, transform=albumentations_transform)
 
     img_paths = []
@@ -1140,15 +932,11 @@ def get_dataloader():
     train_loader = DataLoader(trainval_dataset, batch_size=8, shuffle=False,  num_workers=2, collate_fn=detection_collate_fn)
     return train_loader, img_paths
 
-#--------------------------#
-
 
 
 seg_transform = A.Compose([
     # 1) Resize - to have a consistent baseline size
     A.Resize(224, 224),
-
-    # Removed RandomCrop
 
     # 2) Horizontal Flip (50% chance)
     A.HorizontalFlip(p=0.5),
@@ -1168,12 +956,6 @@ additional_targets={"mask": "mask"})
 import os
 
 def build_img_mask_pairs(img_dir, mask_dir, img_paths):
-    """
-    Given the original list of image_paths (which you used in the dataset),
-    build a (image_path, mask_path) list. We assume the mask is named:
-      <image_basename>_cam.png
-    in mask_dir.
-    """
     pairs = []
     for ipath in img_paths:
         base_name = os.path.splitext(os.path.basename(ipath))[0]
@@ -1195,7 +977,7 @@ class PseudoSegDataset(torch.utils.data.Dataset):
 
         # Load image
         image = cv2.imread(img_path)
-        image = cv2.resize(image, (224, 224), interpolation=cv2.INTER_LINEAR)    # Now image is guaranteed 224×224
+        image = cv2.resize(image, (224, 224), interpolation=cv2.INTER_LINEAR)    
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
 
@@ -1205,7 +987,6 @@ class PseudoSegDataset(torch.utils.data.Dataset):
 
 
         if self.transform:
-            # Albumentations expects 'image' and 'mask' in a dictionary
             augmented = self.transform(image=image, mask=mask)
             image = augmented["image"]
             mask = augmented["mask"]
@@ -1219,6 +1000,7 @@ def get_deeplab_v3(num_classes=2, pretrained_weights=True):
       model = deeplabv3_resnet50(weights=DeepLabV3_ResNet50_Weights.DEFAULT)
     else:
       model = deeplabv3_resnet50(weights=None, weights_backbone=None, progress=False)
+      # Using strict=False due to aux_classifier key issue
 
     model.classifier[4] = nn.Conv2d(256, num_classes, kernel_size=1)  # output channels = 2 (background, foreground)
     return model
@@ -1249,7 +1031,7 @@ def train_segmentation_with_metrics(
         total_steps=total_steps
     )
 
-    criterion = nn.CrossEntropyLoss()  # or BCEWithLogitsLoss for binary
+    criterion = nn.CrossEntropyLoss() 
 
     train_loss_history = []
     val_loss_history   = []
@@ -1276,7 +1058,7 @@ def train_segmentation_with_metrics(
             loss.backward()
             optimizer.step()
 
-            scheduler.step()  # step after each batch
+            scheduler.step()  
 
 
             running_loss += loss.item() * images.size(0)
@@ -1356,26 +1138,16 @@ def evaluate_segmentation_with_accuracy(seg_model, seg_val_loader, criterion, de
     return val_loss, val_acc
 
 """
- 11. Evaluation of Segmentation Model - Metrics
+ 10. Evaluation of Segmentation Model - Metrics
 
 Computing precision, recall, pixel_accuracy, dice, iou
-
-
 *   evaluate_segmentation_metrics() - compute metrics on test dataset (images, trimap GT) by converting trimaps to binary (by ignoring the boundary).
 *   evaluate_seg_val_loader() - compute metrics on validation set (images, binary pseudo maps)
-
-
 """
 
 class OxfordPetsSegmentation(Dataset):
     def __init__(self, root, split='test', transform=None):
-        """
-        Args:
-            root: Directory for the Oxford-IIIT Pet data.
-            split: 'trainval' or 'test' in most TorchVision versions (loads ~3680 or ~3669 images).
-            transform_image: torchvision or custom transforms for the input image.
-            transform_mask: torchvision or custom transforms for the target mask.
-        """
+
         # Load the base dataset with only segmentation masks
         self.dataset = OxfordIIITPet(
             root=root,
@@ -1390,19 +1162,17 @@ class OxfordPetsSegmentation(Dataset):
         image_pil, mask_pil = self.dataset[idx]
 
         # Convert PIL -> NumPy
-        image = np.array(image_pil)            # shape [H, W, 3], dtype=uint8
-        mask  = np.array(mask_pil, dtype=np.uint8)  # shape [H, W], each pixel in {1,2,3} or {0,1,2} depending on dataset
+        image = np.array(image_pil)           
+        mask  = np.array(mask_pil, dtype=np.uint8) 
 
 
         if self.transform:
-            # Albumentations expects 'image' and 'mask' in a dictionary
             augmented = self.transform(image=image, mask=mask)
             image = augmented["image"]
             mask = augmented["mask"]
 
         # The trimap is typically 1=pet, 2=border, 3=background
         # Shift to 0-based: (0=pet, 1=border, 2=background)
-        # If your dataset uses different labeling, adjust here.
         mask = mask - 1
 
         return image, mask
@@ -1411,6 +1181,14 @@ class OxfordPetsSegmentation(Dataset):
         return len(self.dataset)
 
 def evaluate_segmentation_metrics(model, device):
+  """
+  Evaluates the segmentation model on the test set where
+  ground truth masks are trimaps (0=BG, 1=FG, 2=Boundary).
+
+  Ignores boundary pixels for scoring.
+
+  Returns a dict of {precision, recall, accuracy, dice, iou}.
+  """
 
   seg_test_transform = A.Compose([
       # 1) Resize - to have a consistent baseline size
@@ -1426,20 +1204,13 @@ def evaluate_segmentation_metrics(model, device):
 
 
   test_dataset = OxfordPetsSegmentation(
-      root="./oxford_iiit_data",
+      root="./",
       split="test",
       transform=seg_test_transform,
   )
   print("Test size:", len(test_dataset))
   test_loader  = DataLoader(test_dataset, batch_size=4, shuffle=False, num_workers=2)
-  """
-  Evaluates a binary segmentation model on the test set where
-  ground truth masks are trimaps (0=BG, 1=FG, 2=Boundary).
 
-  Ignores boundary pixels for scoring, merges them out of the confusion matrix.
-
-  Returns a dict of {precision, recall, accuracy, dice, iou}.
-  """
   model.eval()
 
   # Running totals for confusion matrix
@@ -1449,7 +1220,7 @@ def evaluate_segmentation_metrics(model, device):
   total_fn = 0
 
   with torch.no_grad():
-      for images, trimaps in tqdm(test_loader, total=len(test_loader)):
+      for images, trimaps in test_loader:
           images  = images.to(device)
           # forward pass
           outputs = model(images)["out"]  # shape [B, 2, H, W] if binary
@@ -1494,10 +1265,23 @@ def evaluate_segmentation_metrics(model, device):
   # Compute metrics
   eps = 1e-7  # for safe division
   precision = total_tp / (total_tp + total_fp + eps)
-  recall    = total_tp / (total_tp + total_fn + eps)  # sensitivity
+  recall    = total_tp / (total_tp + total_fn + eps)  
   accuracy  = (total_tp + total_tn) / (total_tp + total_tn + total_fp + total_fn + eps)
   dice      = 2.0 * total_tp / (2.0 * total_tp + total_fp + total_fn + eps)
-  iou       = total_tp / (total_tp + total_fp + total_fn + eps)
+  iou_foreground  = total_tp / (total_tp + total_fp + total_fn + eps)
+  iou_background  = total_tn / (total_tn + total_fp + total_fn + eps)
+  mean_iou        = (iou_foreground + iou_background) / 2.0
+
+
+  metrics_dict_test = {
+      "precision": precision,
+      "recall": recall,
+      "accuracy": accuracy,
+      "dice": dice,
+      "iou_foreground": iou_foreground,
+      "iou_background": iou_background,
+      "mean_iou": mean_iou
+  }
 
 
   # Now visualize a few random samples
@@ -1508,12 +1292,7 @@ def evaluate_segmentation_metrics(model, device):
         num_samples=5
     )
 
-  return {
-      "precision": precision,
-      "recall": recall,
-      "accuracy": accuracy,
-      "dice": dice,
-      "iou": iou}
+  return metrics_dict_test
 
 import torch
 import numpy as np
@@ -1541,7 +1320,7 @@ def evaluate_seg_val_loader(
     total_fn = 0
 
     with torch.no_grad():
-        for images, gt_masks in tqdm(val_loader, total=len(val_loader)):
+        for images, gt_masks in val_loader:
             images = images.to(device)
             # forward
             outputs = model(images)['out']  # shape [B, 2, H, W] if binary
@@ -1567,18 +1346,23 @@ def evaluate_seg_val_loader(
 
     # compute metrics
     eps = 1e-7
-    precision = total_tp / (total_tp + total_fp + eps)
-    recall    = total_tp / (total_tp + total_fn + eps)
-    accuracy  = (total_tp + total_tn) / (total_tp + total_fp + total_tn + total_fn + eps)
-    dice      = 2.0 * total_tp / (2.0 * total_tp + total_fp + total_fn + eps)
-    iou       = total_tp / (total_tp + total_fp + total_fn + eps)
+    precision       = total_tp / (total_tp + total_fp + eps)
+    recall          = total_tp / (total_tp + total_fn + eps)
+    accuracy        = (total_tp + total_tn) / (total_tp + total_fp + total_tn + total_fn + eps)
+    dice            = 2.0 * total_tp / (2.0 * total_tp + total_fp + total_fn + eps)
+    iou_foreground  = total_tp / (total_tp + total_fp + total_fn + eps)
+    iou_background  = total_tn / (total_tn + total_fp + total_fn + eps)
+    mean_iou        = (iou_foreground + iou_background) / 2.0
+
 
     metrics_dict = {
         "precision": precision,
         "recall": recall,
         "accuracy": accuracy,
         "dice": dice,
-        "iou": iou
+        "iou_foreground": iou_foreground,
+        "iou_background": iou_background,
+        "mean_iou": mean_iou
     }
 
     print("Validation (Binary) Metrics:")
@@ -1599,7 +1383,200 @@ def evaluate_on_test():
     print(f"  Recall:    {metrics['recall']:.4f}")
     print(f"  Accuracy:  {metrics['accuracy']:.4f}")
     print(f"  Dice:      {metrics['dice']:.4f}")
-    print(f"  IoU:       {metrics['iou']:.4f}")
+    print(f"  IoU_foreground:       {metrics['iou_foreground']:.4f}")
+    print(f"  IoU_background:       {metrics['iou_background']:.4f}")
+    print(f"  mIoU:             {metrics['mean_iou']:.4f}")
+
+
+"""
+11. DINO Pseudo Mask Generation
+Using DINO self-attention to generate pseudo masks.
+"""
+dino_model = torch.hub.load('facebookresearch/dino:main', 'dino_vitb16')
+dino_model.eval()
+
+dino_transform = transforms.Compose([
+    transforms.Resize((224, 224)),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                        std=[0.229, 0.224, 0.225])
+])
+
+
+def get_dino_attention_map(model, input_tensor):
+    """
+    Extracts the self-attention map from the last transformer block of a DINO ViT.
+    """
+    attn = None
+    def hook_fn(module, input, output):
+        nonlocal attn
+        attn = output[1]
+
+    handle = model.blocks[-1].attn.register_forward_hook(hook_fn)
+    _ = model(input_tensor)
+    handle.remove()
+
+    if attn is None:
+        raise RuntimeError("Attention map was not captured.")
+
+    # Average across heads
+    attn = attn.mean(dim=1)  # [B, tokens, tokens]
+    cls_attn = attn[:, 0, 1:]  # from class token to patch tokens
+    num_patches = cls_attn.shape[-1]
+    h = w = int(np.sqrt(num_patches))
+    cls_attn = cls_attn.reshape(-1, h, w)
+
+    # Normalize to [0,1]
+    min_val = cls_attn.min(dim=1, keepdim=True)[0].min(dim=2, keepdim=True)[0]
+    max_val = cls_attn.max(dim=1, keepdim=True)[0].max(dim=2, keepdim=True)[0]
+    cls_attn = (cls_attn - min_val) / (max_val - min_val + 1e-8)
+
+    return cls_attn
+
+def process_image_to_pseudo_mask(image_path, threshold=0.5):
+    """
+    Process an input image to get a pseudo mask using DINO self-attention.
+    Returns the patch-space mask [1,h,w].
+    """
+
+    image = Image.open(image_path).convert("RGB")
+    input_tensor = dino_transform(image).unsqueeze(0)  # [1,3,224,224]
+
+    with torch.no_grad():
+        attn_map = get_dino_attention_map(dino_model, input_tensor)
+
+    # Instead of binarizing at patch-space, we keep continuous values for smoother upscaling
+    continuous_mask = attn_map
+
+    return continuous_mask  # shape [1,h,w] in patch space
+
+def generate_dino_pseudo_masks(
+    image_paths,
+    output_dir="dino_pseudo_masks",
+    threshold=0.3,
+    upscale=True,
+    final_size=(224,224)
+):
+    os.makedirs(output_dir, exist_ok=True)
+
+    for img_path in image_paths:
+        # e.g. /path/to/image.jpg
+        base_name = os.path.splitext(os.path.basename(img_path))[0]
+        mask_file = os.path.join(output_dir, f"{base_name}_dino.png")
+
+        continuous_mask = process_image_to_pseudo_mask(img_path, threshold=threshold)
+        # Convert to numpy array
+        mask_np = continuous_mask.squeeze(0).cpu().numpy()  # shape [h, w] with continuous values in [0,1]
+
+        if upscale:
+            mask_np = cv2.resize(
+                mask_np,
+                final_size,
+                interpolation=cv2.INTER_LINEAR
+            )
+        # Apply Gaussian Blur 
+        kernel_size = (5, 5)  
+        smoothed_mask = cv2.GaussianBlur(mask_np, kernel_size, 0)
+
+        # Convert continuous mask to binary using a threshold.
+        binary_mask = (smoothed_mask * 255).astype(np.uint8)
+        _, binary_mask = cv2.threshold(binary_mask, int(threshold * 255), 255, cv2.THRESH_BINARY)
+
+        # Apply morphological opening to remove small noise
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        mask_opened = cv2.morphologyEx(binary_mask, cv2.MORPH_OPEN, kernel)
+
+        # Apply morphological closing to fill small holes
+        mask_closed = cv2.morphologyEx(mask_opened, cv2.MORPH_CLOSE, kernel)
+
+        # Save the processed mask
+        cv2.imwrite(mask_file, mask_closed)
+
+    print("DINO pseudo-masks saved in", output_dir)
+
+"""
+12. Combine DINO and ReCAM maps
+This function combines DINO and ReCAM maps to produce a single pseudo mask.
+"""
+
+def combine_dino_recam(
+    dino_dir,         # e.g. "dino_pseudo_masks"
+    recam_dir,        # e.g. "recam_maps"
+    output_dir="combined_masks",
+    combine_mode="average",  # or "max"
+    alpha=0.5,
+    threshold=0.5
+):
+    """
+    Combine DINO and ReCAM maps per image to produce a single pseudo mask.
+    Args:
+        dino_dir (str): Directory where the DINO masks are saved.
+        recam_dir (str): Directory where the ReCAM masks are saved.
+        output_dir (str): Where to save the combined masks.
+        combine_mode (str): "average" or "max".
+        alpha (float): weighting for the average, e.g. 0.5 means equal weights.
+        threshold (float): final threshold for the combined map in [0..1].
+    """
+    os.makedirs(output_dir, exist_ok=True)
+
+    # List all files in dino_dir. We assume matching filenames exist in recam_dir
+    dino_files = [f for f in os.listdir(dino_dir) if f.endswith(".png") or f.endswith(".jpg")]
+
+    print(len(dino_files))
+
+    for f in dino_files:
+        dino_path = os.path.join(dino_dir, f)
+
+        recam_path = os.path.join(recam_dir, f.replace('_dino.png', '_cam.npy'))
+
+
+        if not os.path.exists(recam_path):
+            # skip if recam file doesn't exist
+            print("skipping as recam file doesn't exist")
+            continue
+
+        # Load the DINO mask
+        dino_mask = cv2.imread(dino_path, cv2.IMREAD_GRAYSCALE)  # shape [H,W], 0..255
+        if dino_mask is None:
+            print(f"Cannot read DINO mask: {dino_path}")
+            continue
+
+        # Load the ReCAM mask
+        # recam_mask = cv2.imread(recam_path, cv2.IMREAD_GRAYSCALE)  # shape [H,W], 0..255
+        recam_float = np.load(recam_path)  # shape [H,W], 0..1
+        if recam_float is None:
+            print(f"Cannot read ReCAM mask: {recam_path}")
+            continue
+
+        # Convert to float [0..1] if they're [0..255].
+        dino_float = dino_mask.astype(np.float32) / 255.0
+        # recam_float = recam_mask.astype(np.float32) / 255.0
+
+        # Combine
+        if combine_mode == "average":
+            combined = alpha * dino_float + (1.0 - alpha) * recam_float
+        elif combine_mode == "max":
+            combined = np.maximum(dino_float, recam_float)
+        else:
+            raise ValueError("combine_mode must be 'average' or 'max'.")
+
+        # Threshold the final map
+        final_bin = (combined >= threshold).astype(np.uint8) * 255
+
+        # Apply morphological opening to remove small noise
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        mask_opened = cv2.morphologyEx(final_bin, cv2.MORPH_OPEN, kernel)
+
+        # Apply morphological closing to fill small holes
+        mask_closed = cv2.morphologyEx(mask_opened, cv2.MORPH_CLOSE, kernel)
+
+        base_name_recam = os.path.splitext(os.path.basename(recam_path))[0]
+
+        mask_file = os.path.join(output_dir, f"{base_name_recam}.png")
+
+        cv2.imwrite(mask_file, mask_closed)
+
+    print(f"Combined masks saved in: {output_dir}")
 
 
 """
@@ -1613,21 +1590,21 @@ def main():
     # 2. Create a classifier and train it
     classifier = get_resnet50_classifier_model(num_classes=37,pretrained_weights=True)
     classifier = train_classifier_with_metrics(
-        model=classifier,
-        train_loader=train_loader,
-        val_loader=val_loader,
-        num_epochs=20, base_lr=1e-3, max_lr=1e-2, weight_decay=1e-4, clip_grad_norm=None, save_path="classifier.pth", log_file = "classifier_metrics_log.txt")
+       model=classifier,
+       train_loader=train_loader,
+       val_loader=val_loader,
+       num_epochs=20, base_lr=1e-3, max_lr=1e-2, weight_decay=1e-4, clip_grad_norm=None, save_path="classifier.pth", log_file = "classifier_metrics_log.txt")
 
-    # # Loading Classifier
+    # Loading trained classifier (weights file requried)
     # classifier = get_resnet50_classifier_model(num_classes=37,pretrained_weights=False)
-    # classifier.load_state_dict(torch.load("/content/classifier.pth", map_location=device))
+    # classifier.load_state_dict(torch.load("classifier.pth", map_location=device))
     # classifier = classifier.to(device)
 
 
     # Load trainval dataset with Bounding Boxes
     train_loader_bbox, train_img_paths = get_dataloader()
 
-    # # 3. Generate raw CAMs
+    # 3. Generate raw CAMs
     gradcam = GradCAM(classifier, target_layer_name="layer4")  # for ResNet
     generate_cams(
         model=classifier,
@@ -1638,26 +1615,40 @@ def main():
         output_dir="cams_out", scales=[0.75, 1.0, 1.25]
     )
 
-    # 4. Apply ReCAM refinement
+    # # 4. Apply ReCAM refinement
     refine_cams_with_recam("cams_out", refined_dir="cams_refined",
                            threshold=0.2, expansion_factor=1.2)
 
-    # refine_cams_with_recam_extended("cams_out", output_dir="cams_refined",
-    #                        iteration_steps=2, erase_ratio=0.15, threshold=0.2, expansion_factor=1.1)
 
-    # 5. Generate pseudo masks
-    generate_pseudo_masks(refined_cam_dir="cams_refined",
-                          output_mask_dir="pseudo_masks",
-                          threshold=0.2)
+    # # 5. Generate DINO pseudo masks with smoothed edges
+    generate_dino_pseudo_masks(
+        image_paths=train_img_paths,
+        output_dir="dino_pseudo_masks",
+        threshold=0.3,
+        upscale=True,
+        final_size=(224,224)  # or the original size if you prefer
+    )
 
-    # 6. Train a segmentation model (DeepLab) with these pseudo masks
+    # 6. Combine DINO pseudo masks with CAM's
+    combine_dino_recam(
+        dino_dir="dino_pseudo_masks",
+        recam_dir="cams_refined",
+        output_dir="combined_pseudo_masks",
+        combine_mode="average",
+        alpha=0.5,    # only used if combine_mode="average"
+        threshold=0.5
+    )
+
+    # 7. Train a segmentation model (DeepLab) with these pseudo masks
 
     # Build a dataset from your images and "pseudo_masks"
 
     img_mask_pairs = build_img_mask_pairs(
-    img_dir="oxford_iiit_data/oxford-iiit-pet/images",
-    mask_dir="pseudo_masks",
+    img_dir="oxford-iiit-pet/images",
+    mask_dir="combined_pseudo_masks",
     img_paths=train_img_paths) # the same list used in the dataset
+
+    torch.cuda.empty_cache()
 
     seg_trainval_dataset = PseudoSegDataset(img_mask_pairs, transform=seg_transform)
 
@@ -1675,6 +1666,13 @@ def main():
         seg_model, seg_train_loader, seg_val_loader,
         num_epochs=20, base_lr=1e-3, max_lr=1e-2, weight_decay=1e-4, save_path="weakly_segmentation.pth", log_file = "segmentation_metrics_log.txt")
 
+    # Loading trained Segmentation model (weights file requried)
+    # seg_model = get_deeplab_v3(num_classes=2,pretrained_weights=False)
+    # state_dict = torch.load("weakly_segmentation.pth", map_location=device)
+    # # Remove keys related to the aux classifier
+    # state_dict = {k: v for k, v in state_dict.items() if not k.startswith("aux_classifier")}
+    # seg_model.load_state_dict(state_dict)
+    # seg_model = seg_model.to(device)
 
     # 7. Testing / visualization / Final evaluation - compute metrics (pseudo masks compared with predicted masks)
     evaluate_seg_val_loader(seg_model,seg_val_loader, device)
@@ -1693,6 +1691,7 @@ def main():
 
     print("Workflow complete!")
 
+
+
 if __name__ == "__main__":
     main()
-
