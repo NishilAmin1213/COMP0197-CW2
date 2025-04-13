@@ -1,0 +1,17 @@
+Validation (Binary) Metrics:
+  precision: 0.7787
+  recall: 0.5707
+  accuracy: 0.9247
+  dice: 0.6586
+  iou_foreground: 0.4910
+  iou_background: 0.9188
+  mean_iou: 0.7049
+Test size: 3669
+Evaluation on Test Set (Ignoring Boundary Pixels):
+  Precision: 0.0193
+  Recall:    0.0029
+  Accuracy:  0.2458
+  Dice:      0.0051
+  IoU_foreground:       0.0025
+  IoU_background:       0.2444
+  mIoU:             0.1235
