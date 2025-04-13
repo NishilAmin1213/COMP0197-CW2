@@ -8,7 +8,31 @@ from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms, models
 import numpy as np
 from PIL import Image
-# import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt
+import sys
+import datetime
+
+# Setup logging
+def setup_logging():
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_filename = f"training_log_{timestamp}.txt"
+    
+    class Logger(object):
+        def __init__(self):
+            self.terminal = sys.stdout
+            self.log = open(log_filename, "a")
+
+        def write(self, message):
+            self.terminal.write(message)
+            self.log.write(message)  
+
+        def flush(self):
+            pass    
+    
+    sys.stdout = Logger()
+    sys.stderr = sys.stdout
+
+setup_logging()
 
 # Set random seeds for reproducibility
 manualSeed = 42
@@ -283,15 +307,54 @@ class CombinedSegmentationModel(nn.Module):
             'final': final_seg_up
         }
 
+def calculate_metrics(pred, target, threshold=0.5):
+    """Calculate various segmentation metrics"""
+    pred = (pred > threshold).float()  # Convert probabilities to binary predictions
+    
+    # Flatten tensors
+    pred_flat = pred.view(-1)
+    target_flat = target.view(-1)
+    
+    # Calculate confusion matrix elements
+    tp = torch.sum((pred_flat == 1) & (target_flat == 1)).float()
+    tn = torch.sum((pred_flat == 0) & (target_flat == 0)).float()
+    fp = torch.sum((pred_flat == 1) & (target_flat == 0)).float()
+    fn = torch.sum((pred_flat == 0) & (target_flat == 1)).float()
+    
+    # Avoid division by zero
+    eps = 1e-7
+    
+    # Calculate metrics
+    accuracy = (tp + tn) / (tp + tn + fp + fn + eps)
+    precision = tp / (tp + fp + eps)
+    recall = tp / (tp + fn + eps)
+    iou = tp / (tp + fp + fn + eps)
+    dice = (2 * tp) / (2 * tp + fp + fn + eps)
+    
+    return {
+        'accuracy': accuracy.item(),
+        'precision': precision.item(),
+        'recall': recall.item(),
+        'iou': iou.item(),
+        'dice': dice.item()
+    }
+
 def train_model(model, weak_train_loader, full_train_loader, val_loader, criterion, optimizer, num_epochs=25):
     best_model_wts = model.state_dict()
-    best_loss = float('inf')
+    best_iou = 0.0
     
     train_loss_history = []
     val_loss_history = []
+    val_metrics_history = {
+        'accuracy': [],
+        'precision': [],
+        'recall': [],
+        'iou': [],
+        'dice': []
+    }
     
     for epoch in range(num_epochs):
-        print(f'Epoch {epoch+1}/{num_epochs}')
+        print(f'\nEpoch {epoch+1}/{num_epochs}')
         print('-' * 10)
         
         # Training phase
@@ -340,13 +403,20 @@ def train_model(model, weak_train_loader, full_train_loader, val_loader, criteri
             
             running_loss += loss.item() * (weak_inputs.size(0) if weak_loss is not None else full_inputs.size(0))
         
-        epoch_loss = running_loss / len(weak_train_loader.dataset)  # Using weak loader length as reference
+        epoch_loss = running_loss / len(weak_train_loader.dataset)
         train_loss_history.append(epoch_loss)
         print(f'Train Loss: {epoch_loss:.4f}')
         
         # Validation phase
         model.eval()
         running_loss = 0.0
+        running_metrics = {
+            'accuracy': 0.0,
+            'precision': 0.0,
+            'recall': 0.0,
+            'iou': 0.0,
+            'dice': 0.0
+        }
         
         with torch.no_grad():
             for inputs, labels in val_loader:
@@ -356,28 +426,60 @@ def train_model(model, weak_train_loader, full_train_loader, val_loader, criteri
                 outputs = model(inputs)
                 loss = criterion(outputs['final'], labels)
                 
+                # Calculate metrics
+                metrics = calculate_metrics(outputs['final'], labels)
+                
                 running_loss += loss.item() * inputs.size(0)
+                for key in running_metrics:
+                    running_metrics[key] += metrics[key] * inputs.size(0)
         
+        # Calculate epoch averages
         epoch_val_loss = running_loss / len(val_loader.dataset)
         val_loss_history.append(epoch_val_loss)
-        print(f'Val Loss: {epoch_val_loss:.4f}')
         
-        if epoch_val_loss < best_loss:
-            best_loss = epoch_val_loss
+        for key in running_metrics:
+            running_metrics[key] /= len(val_loader.dataset)
+            val_metrics_history[key].append(running_metrics[key])
+        
+        print(f'Val Loss: {epoch_val_loss:.4f}')
+        print('Val Metrics:')
+        print(f"  Accuracy: {running_metrics['accuracy']:.4f}")
+        print(f"  Precision: {running_metrics['precision']:.4f}")
+        print(f"  Recall: {running_metrics['recall']:.4f}")
+        print(f"  IoU: {running_metrics['iou']:.4f}")
+        print(f"  Dice: {running_metrics['dice']:.4f}")
+        
+        # Save best model based on IoU
+        if running_metrics['iou'] > best_iou:
+            best_iou = running_metrics['iou']
             best_model_wts = model.state_dict()
             torch.save(model.state_dict(), 'best_model.pth')
+            print(f"New best model saved with IoU: {best_iou:.4f}")
     
     # Plot training history
-    # plt.figure()
-    # plt.plot(train_loss_history, label='Train Loss')
-    # plt.plot(val_loss_history, label='Val Loss')
-    # plt.xlabel('Epoch')
-    # plt.ylabel('Loss')
-    # plt.legend()
-    # plt.savefig('training_history.png')
-    # plt.close()
+    plt.figure(figsize=(12, 5))
     
-    print(f'Best val Loss: {best_loss:.4f}')
+    # Loss plot
+    plt.subplot(1, 2, 1)
+    plt.plot(train_loss_history, label='Train Loss')
+    plt.plot(val_loss_history, label='Val Loss')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.legend()
+    
+    # Metrics plot
+    plt.subplot(1, 2, 2)
+    for metric, values in val_metrics_history.items():
+        plt.plot(values, label=metric)
+    plt.xlabel('Epoch')
+    plt.ylabel('Score')
+    plt.legend()
+    
+    plt.tight_layout()
+    plt.savefig('training_history.png')
+    plt.close()
+    
+    print(f'\nTraining complete. Best IoU: {best_iou:.4f}')
     model.load_state_dict(best_model_wts)
     return model
 
@@ -427,7 +529,7 @@ if __name__ == '__main__':
         val_loader,
         criterion,
         optimizer,
-        num_epochs=30
+        num_epochs=15
     )
     
     # Save final model
