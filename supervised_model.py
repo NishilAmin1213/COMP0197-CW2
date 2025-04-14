@@ -9,6 +9,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset
 import matplotlib.pyplot as plt
+import torchvision.datasets as datasets
 
 def prepare_dataset(data_dir='oxford-iiit-pet', test_size=0.1, val_size=0.1):
     print("Preparing dataset structure...")
@@ -22,13 +23,16 @@ def prepare_dataset(data_dir='oxford-iiit-pet', test_size=0.1, val_size=0.1):
     os.makedirs(os.path.join(data_dir, 'test', 'annotations'), exist_ok=True)
 
     # Get all image files from the original location
-    # original_img_dir = 'images'
-    # original_ann_dir = os.path.join('annotations', 'trimaps')
-    original_img_dir = os.path.join(data_dir, 'images')
-    original_ann_dir = os.path.join(data_dir, 'annotations', 'trimaps')
+    # Get all image files from the original location
+    original_img_dir = os.path.join('oxford-iiit-pet', 'images')
+    original_ann_dir = os.path.join('oxford-iiit-pet', 'annotations', 'trimaps')
 
     if not os.path.exists(original_img_dir) or not os.path.exists(original_ann_dir):
-        raise FileNotFoundError("Original dataset files not found. Please download and extract images.tar.gz and annotations.tar.gz first")
+        # Try to download the dataset if not found
+        print("Dataset not found, downloading...")
+        datasets.OxfordIIITPet(root='./', download=True)
+        if not os.path.exists(original_img_dir) or not os.path.exists(original_ann_dir):
+            raise FileNotFoundError("Failed to download dataset automatically. Please download manually.")
 
     # Get all jpg filenames in the directory
     image_files = []
