@@ -4,12 +4,6 @@
 /annotations/
 *.gz
 
-# Model checkpoints
-*.pth
-*.pt
-*.bin
-*.h5
-
 # PyTorch/VSCode artifacts
 .ipynb_checkpoints/
 __pycache__/
