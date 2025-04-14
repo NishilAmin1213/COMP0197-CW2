@@ -1225,7 +1225,7 @@ def evaluate_segmentation_metrics(model, device):
           # forward pass
           outputs = model(images)["out"]  # shape [B, 2, H, W] if binary
           preds   = torch.argmax(outputs, dim=1)  # shape [B, H, W], in {0,1}
-
+          preds = 1 - preds
           preds   = preds.cpu().numpy()
           trimaps = trimaps.numpy()
 
