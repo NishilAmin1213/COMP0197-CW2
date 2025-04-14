@@ -10,7 +10,7 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset
 import matplotlib.pyplot as plt
 
-def prepare_dataset(data_dir='Oxford-IIIT-Pet', test_size=0.1, val_size=0.1):
+def prepare_dataset(data_dir='oxford-iiit-pet', test_size=0.1, val_size=0.1):
     print("Preparing dataset structure...")
 
     # Create directories if they don't exist
@@ -22,8 +22,10 @@ def prepare_dataset(data_dir='Oxford-IIIT-Pet', test_size=0.1, val_size=0.1):
     os.makedirs(os.path.join(data_dir, 'test', 'annotations'), exist_ok=True)
 
     # Get all image files from the original location
-    original_img_dir = 'images'
-    original_ann_dir = os.path.join('annotations', 'trimaps')
+    # original_img_dir = 'images'
+    # original_ann_dir = os.path.join('annotations', 'trimaps')
+    original_img_dir = os.path.join(data_dir, 'images')
+    original_ann_dir = os.path.join(data_dir, 'annotations', 'trimaps')
 
     if not os.path.exists(original_img_dir) or not os.path.exists(original_ann_dir):
         raise FileNotFoundError("Original dataset files not found. Please download and extract images.tar.gz and annotations.tar.gz first")
@@ -70,7 +72,7 @@ def prepare_dataset(data_dir='Oxford-IIIT-Pet', test_size=0.1, val_size=0.1):
     print(str(len(train_files)) + " training images, " + str(len(val_files)) + " validation images, and " + str(len(test_files)) + " test images")
 
 
-def check_dataset_exists(data_dir='Oxford-IIIT-Pet'):
+def check_dataset_exists(data_dir='oxford-iiit-pet'):
     required_folders = [
         os.path.join(data_dir, 'train', 'images'),
         os.path.join(data_dir, 'train', 'annotations'),
@@ -317,12 +319,12 @@ if __name__ == "__main__":
     print("Supervised Learning Code Started")
 
     # Check if dataset is already structured; if not, prepare it
-    if not check_dataset_exists('Oxford-IIIT-Pet'):
-        os.makedirs('Oxford-IIIT-Pet', exist_ok=True)
-        prepare_dataset(data_dir='Oxford-IIIT-Pet', test_size=0.1, val_size=0.1)
+    if not check_dataset_exists('oxford-iiit-pet'):
+        os.makedirs('oxford-iiit-pet', exist_ok=True)
+        prepare_dataset(data_dir='oxford-iiit-pet', test_size=0.1, val_size=0.1)
 
     print("Initializing Dataset Objects")
-    base_dir = "Oxford-IIIT-Pet"
+    base_dir = "oxford-iiit-pet"
     train_dataset = AnimalSegmentationDataset(
         os.path.join(base_dir, "train", "images"),
         os.path.join(base_dir, "train", "annotations")
