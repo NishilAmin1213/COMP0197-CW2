@@ -47,7 +47,7 @@ torch.backends.cudnn.benchmark = False
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Using device: {device}")
 
-def prepare_dataset(data_dir='Oxford-IIIT-Pet', test_size=0.1, val_size=0.1):
+def prepare_dataset(data_dir='oxford-iiit-pet', test_size=0.1, val_size=0.1):
     """Prepare the dataset by splitting into train/val/test and copying files"""
     print("Preparing dataset structure...")
     
@@ -60,8 +60,10 @@ def prepare_dataset(data_dir='Oxford-IIIT-Pet', test_size=0.1, val_size=0.1):
     os.makedirs(os.path.join(data_dir, 'test', 'annotations'), exist_ok=True)
     
     # Get all image files from the original location
-    original_img_dir = 'images'
-    original_ann_dir = os.path.join('annotations', 'trimaps')
+    # original_img_dir = 'images'
+    # original_ann_dir = os.path.join('annotations', 'trimaps')
+    original_img_dir = os.path.join(data_dir, 'images')
+    original_ann_dir = os.path.join(data_dir, 'annotations', 'trimaps')
     
     if not os.path.exists(original_img_dir) or not os.path.exists(original_ann_dir):
         raise FileNotFoundError("Original dataset files not found. Please download and extract images.tar.gz and annotations.tar.gz first")
@@ -97,7 +99,7 @@ def prepare_dataset(data_dir='Oxford-IIIT-Pet', test_size=0.1, val_size=0.1):
     
     print(f"Dataset prepared with {len(train_files)} training, {len(val_files)} validation, and {len(test_files)} test images")
 
-def check_dataset_exists(data_dir='Oxford-IIIT-Pet'):
+def check_dataset_exists(data_dir='oxford-iiit-pet'):
     """Check if dataset is properly set up"""
     required_folders = [
         os.path.join(data_dir, 'train', 'images'),
@@ -426,7 +428,7 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, num_epoch
     return model
 
 if __name__ == '__main__':
-    data_dir = 'Oxford-IIIT-Pet'
+    data_dir = 'oxford-iiit-pet'
     
     # Check and prepare dataset if needed
     if not check_dataset_exists(data_dir):
