@@ -57,7 +57,14 @@ To run the scripts, please ensure you have the following dependencies installed:
 You can install most dependencies using `pip`:
 
 ```bash
-pip install torch torchvision numpy pillow matplotlib albumentations opencv-python
+conda create -n comp0197-cw1-pt python=3.12 pip && conda activate comp0197-cw1-pt && pip install torch==2.5.0 torchvision --index-url https://download.pytorch.org/whl/cpu
+```
+```bash
+conda activate comp0197-cw1-pt
+```
+
+```bash
+pip install matplotlib albumentations opencv-python
 ```
 
 
