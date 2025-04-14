@@ -16,7 +16,7 @@ This project provides multiple Python scripts for performing image segmentation 
 ## Overview
 
 The project implements segmentation models on the Oxford-IIIT Pet dataset using three different methodologies:
-- **Weakly Supervised**: Uses minimal pixel-level annotations and leverages class activation maps (CAM) for segmentation.
+- **Weakly Supervised**: Uses no pixel-level annotations from the dataset and leverages class activation maps (CAM) and self-attention models for segmentation.
 - **Fully Supervised**: Uses full pixel-level annotations to train a segmentation network.
 - **Hybrid Approach**: Combines both weak and full supervision. Two variants are provided:
   - One using parallel processing of weakly supervised (CAM-based) and fully supervised branches.
@@ -40,7 +40,7 @@ A central script (`main.py`) is provided to sequentially run each segmentation m
   Contains the implementation of a fully supervised segmentation model. It includes custom dataset classes with data augmentation, a simple encoder–decoder network, training routines, evaluation metrics, and loss/accuracy logging.
 
 - **weakly_supervised_model.py**  
-  Implements a weakly supervised segmentation method using class activation maps (CAMs) and refinement techniques. It leverages additional libraries (e.g. Albumentations) for data augmentation and custom transforms. The file also includes functions for generating CAMs and refining them using strategies such as ReCAM.
+  Implements a weakly supervised segmentation method using class activation maps (CAMs), self-attention and refinement techniques. It leverages additional libraries (e.g. Albumentations) for data augmentation and custom transforms. The file also includes functions for generating CAMs and refining them using strategies such as ReCAM and self-attention models.
 
 ## Installation and Dependencies
 
@@ -52,7 +52,7 @@ To run the scripts, please ensure you have the following dependencies installed:
 - Pillow
 - Matplotlib
 - Albumentations (for the weakly supervised model)
-- (Optionally) OpenCV, if additional image processing is needed
+- OpenCV (for additional image processing)
 
 You can install most dependencies using `pip`:
 
@@ -125,10 +125,10 @@ Alternatively, you may run each script individually during development or testin
     - Functions for training, evaluation, and plotting of loss/accuracy curves.
 
 ### weakly_supervised_model.py
-- Purpose: Focuses on using minimal annotations and class activation maps (CAMs) to drive segmentation.
+- Purpose: Focuses on using minimal annotations (just bounding-boxes) and class activation maps (CAMs) to drive segmentation.
 - Key Features:
-    - Uses Grad-CAM and multi-scale CAM generation for weak supervision.
-    - Implements additional data augmentations with Albumentations.
+    - Uses Grad-CAM and multi-scale CAM, ReCAM for refinement of CAM's and self-attention maps for weak supervision.
+    - Implements additional data augmentations with Albumentations and Custom Transforms.
     - Contains functions for CAM visualisation and refinement (e.g., ReCAM technique).
 
 ## Logging and Output
