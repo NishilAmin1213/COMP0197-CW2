@@ -1,0 +1,183 @@
+Using device: cpu
+Dataset not properly set up. Preparing now...
+Preparing dataset structure...
+Dataset prepared with 5912 training, 739 validation, and 739 test images
+Dataset preparation complete!
+
+Checking dataset structure...
+Train images exist: True
+Train annotations exist: True
+Val images exist: True
+Val annotations exist: True
+
+Loading datasets...
+Loaded 5912 weakly supervised training samples
+Loaded 5912 fully supervised training samples
+Loaded 739 validation samples
+
+Epoch 1/15
+----------
+Train Loss: 0.8947
+Val Loss: 0.0335
+Val Metrics:
+  Accuracy: 0.9996
+  Precision: 0.0000
+  Recall: 0.0000
+  IoU: 0.0000
+  Dice: 0.0000
+
+Epoch 2/15
+----------
+Train Loss: 0.0071
+Val Loss: 0.0322
+Val Metrics:
+  Accuracy: 1.0000
+  Precision: 0.0000
+  Recall: 0.0000
+  IoU: 0.0000
+  Dice: 0.0000
+
+Epoch 3/15
+----------
+Train Loss: 0.0072
+Val Loss: 0.0172
+Val Metrics:
+  Accuracy: 0.9999
+  Precision: 0.0000
+  Recall: 0.0000
+  IoU: 0.0000
+  Dice: 0.0000
+
+Epoch 4/15
+----------
+Train Loss: 0.0110
+Val Loss: 0.0237
+Val Metrics:
+  Accuracy: 1.0000
+  Precision: 0.0000
+  Recall: 0.0000
+  IoU: 0.0000
+  Dice: 0.0000
+
+Epoch 5/15
+----------
+Train Loss: 0.0080
+Val Loss: 0.0133
+Val Metrics:
+  Accuracy: 1.0000
+  Precision: 0.0000
+  Recall: 0.0000
+  IoU: 0.0000
+  Dice: 0.0000
+
+Epoch 6/15
+----------
+Train Loss: 0.0988
+Val Loss: 38068.2425
+Val Metrics:
+  Accuracy: 0.2580
+  Precision: 0.0000
+  Recall: 0.0000
+  IoU: 0.0000
+  Dice: 0.0000
+
+Epoch 7/15
+----------
+Train Loss: 0.0307
+Val Loss: 0.0558
+Val Metrics:
+  Accuracy: 1.0000
+  Precision: 0.0000
+  Recall: 0.0000
+  IoU: 0.0000
+  Dice: 0.0000
+
+Epoch 8/15
+----------
+Train Loss: 0.0170
+Val Loss: 0.0333
+Val Metrics:
+  Accuracy: 1.0000
+  Precision: 0.0000
+  Recall: 0.0000
+  IoU: 0.0000
+  Dice: 0.0000
+
+Epoch 9/15
+----------
+Train Loss: 0.0117
+Val Loss: 0.0499
+Val Metrics:
+  Accuracy: 1.0000
+  Precision: 0.0000
+  Recall: 0.0000
+  IoU: 0.0000
+  Dice: 0.0000
+
+Epoch 10/15
+----------
+Train Loss: 0.0102
+Val Loss: 0.0784
+Val Metrics:
+  Accuracy: 1.0000
+  Precision: 0.0000
+  Recall: 0.0000
+  IoU: 0.0000
+  Dice: 0.0000
+
+Epoch 11/15
+----------
+Train Loss: 0.0087
+Val Loss: 0.0574
+Val Metrics:
+  Accuracy: 0.9999
+  Precision: 0.0000
+  Recall: 0.0000
+  IoU: 0.0000
+  Dice: 0.0000
+
+Epoch 12/15
+----------
+Train Loss: 0.0082
+Val Loss: 0.0315
+Val Metrics:
+  Accuracy: 0.9999
+  Precision: 0.0000
+  Recall: 0.0000
+  IoU: 0.0000
+  Dice: 0.0000
+
+Epoch 13/15
+----------
+Train Loss: 0.0116
+Val Loss: 0.0507
+Val Metrics:
+  Accuracy: 1.0000
+  Precision: 0.0000
+  Recall: 0.0000
+  IoU: 0.0000
+  Dice: 0.0000
+
+Epoch 14/15
+----------
+Train Loss: 0.0085
+Val Loss: 0.0354
+Val Metrics:
+  Accuracy: 1.0000
+  Precision: 0.0000
+  Recall: 0.0000
+  IoU: 0.0000
+  Dice: 0.0000
+
+Epoch 15/15
+----------
+Train Loss: 0.0111
+Val Loss: 0.0288
+Val Metrics:
+  Accuracy: 1.0000
+  Precision: 0.0000
+  Recall: 0.0000
+  IoU: 0.0000
+  Dice: 0.0000
+
+Training complete. Best IoU: 0.0000
